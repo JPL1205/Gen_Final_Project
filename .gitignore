@@ -9,3 +9,6 @@ download/*.csv
 temp*.*
 *.tar*
 *.vsix
+.venv/
+data/
+wandb/

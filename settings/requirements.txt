@@ -13,6 +13,7 @@ sentencepiece
 accelerate
 transformers
 diffusers==0.32
+peft
 kiui
 omegaconf
 pyarrow

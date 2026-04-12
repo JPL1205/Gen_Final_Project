@@ -24,6 +24,7 @@ from kiui.cam import orbit_camera
 from src.options import opt_dict
 from src.models import GSAutoencoderKL, GSRecon, ElevEst
 import src.utils.util as util
+import src.utils.peft_util as peft_util
 import src.utils.op_util as op_util
 import src.utils.geo_util as geo_util
 import src.utils.vis_util as vis_util
@@ -302,6 +303,24 @@ def main():
         help="Iteration of the pretrained ControlNet checkpoint"
     )
     parser.add_argument(
+        "--load_lora_path",
+        type=str,
+        default=None,
+        help="Path to a LoRA adapter directory or checkpoint directory containing `unet_lora`"
+    )
+    parser.add_argument(
+        "--load_lora_tag",
+        type=str,
+        default=None,
+        help="Experiment tag whose checkpoint contains LoRA adapters"
+    )
+    parser.add_argument(
+        "--load_lora_ckpt",
+        type=int,
+        default=-1,
+        help="Iteration of the LoRA checkpoint (used with --load_lora_tag)"
+    )
+    parser.add_argument(
         "--load_pretrained_elevest",
         type=str,
         default="elevest_gobj265k_b_C25",
@@ -325,6 +344,7 @@ def main():
     if "opt" in configs:
         for k, v in configs["opt"].items():
             setattr(opt, k, v)
+    opt.__post_init__()
 
     # Create an experiment directory using the `tag`
     if args.tag is None:
@@ -337,9 +357,7 @@ def main():
     infer_dir = os.path.join(exp_dir, "inference")
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(infer_dir, exist_ok=True)
-    if args.hdfs_dir is not None:
-        args.project_hdfs_dir = args.hdfs_dir
-        args.hdfs_dir = os.path.join(args.hdfs_dir, args.tag)
+    args.hdfs_dir, args.project_hdfs_dir = util.prepare_hdfs_output_dir(args.hdfs_dir, args.tag)
 
     # Initialize the logger
     logging.basicConfig(
@@ -453,6 +471,17 @@ def main():
     if opt.beta_schedule is not None:
         noise_scheduler.config.beta_schedule = opt.beta_schedule
 
+    def resolve_lora_dir(subfolder: str) -> Optional[str]:
+        if args.load_lora_path is not None:
+            return peft_util.resolve_adapter_dir(args.load_lora_path, subfolder)
+        if args.load_lora_tag is None:
+            return None
+
+        lora_ckpt_dir = os.path.join(args.output_dir, args.load_lora_tag, "checkpoints")
+        lora_hdfs_dir = None if args.hdfs_dir is None else os.path.join(args.project_hdfs_dir, args.load_lora_tag)
+        lora_ckpt = util.load_ckpt(lora_ckpt_dir, args.load_lora_ckpt, lora_hdfs_dir, None)
+        return os.path.join(lora_ckpt_dir, f"{lora_ckpt:06d}", subfolder)
+
     # Load checkpoint
     logger.info(f"Load checkpoint from iteration [{args.infer_from_iter}]\n")
     if not os.path.exists(os.path.join(ckpt_dir, f"{args.infer_from_iter:06d}")):
@@ -463,27 +492,59 @@ def main():
             None,  # `None`: not load model ckpt here
         )
     path = os.path.join(ckpt_dir, f"{args.infer_from_iter:06d}")
-    os.system(f"python3 extensions/merge_safetensors.py {path}/unet_ema")  # merge safetensors for loading
-    unet, loading_info = UNetMV2DConditionModel.from_pretrained_new(path, subfolder="unet_ema",
-        low_cpu_mem_usage=False, ignore_mismatched_sizes=True, output_loading_info=True, **unet_from_pretrained_kwargs)
+    unet_ema_dir = os.path.join(path, "unet_ema")
+    if os.path.exists(unet_ema_dir):
+        os.system(f"python3 extensions/merge_safetensors.py {path}/unet_ema")  # merge safetensors for loading
+        unet, loading_info = UNetMV2DConditionModel.from_pretrained_new(path, subfolder="unet_ema",
+            low_cpu_mem_usage=False, ignore_mismatched_sizes=True, output_loading_info=True, **unet_from_pretrained_kwargs)
+    else:
+        logger.warning(f"UNet checkpoint [{unet_ema_dir}] not found; fallback to base pretrained backbone [{opt.pretrained_model_name_or_path}].")
+        unet, loading_info = UNetMV2DConditionModel.from_pretrained_new(opt.pretrained_model_name_or_path, subfolder="unet",
+            low_cpu_mem_usage=False, ignore_mismatched_sizes=True, output_loading_info=True, **unet_from_pretrained_kwargs)
     for key in loading_info.keys():
         assert len(loading_info[key]) == 0  # no missing_keys, unexpected_keys, mismatched_keys, error_msgs
 
+    lora_dir = resolve_lora_dir("unet_lora")
+    if lora_dir is not None:
+        unet, loaded = peft_util.build_peft_model_for_inference(unet, lora_dir, opt.peft_adapter_name)
+        if loaded:
+            logger.info(f"Loaded UNet LoRA adapter from [{lora_dir}]\n")
+        else:
+            logger.warning(f"UNet LoRA adapter not found at [{lora_dir}]")
+
+    controlnet_lora_dir = resolve_lora_dir("controlnet_lora")
+
     # Load ControlNet checkpoint
-    if args.load_pretrained_controlnet is not None:
-        logger.info(f"Load MVUNet ControlNet checkpoint from [{args.load_pretrained_controlnet}] iteration [{args.load_pretrained_controlnet_ckpt:06d}]\n")
-        path = f"out/{args.load_pretrained_controlnet}/checkpoints/{args.load_pretrained_controlnet_ckpt:06d}"
-        if not os.path.exists(path):
-            args.load_pretrained_controlnet_ckpt = util.load_ckpt(
-                os.path.join(args.output_dir, args.load_pretrained_controlnet, "checkpoints"),
-                args.load_pretrained_controlnet_ckpt,
-                None if args.hdfs_dir is None else os.path.join(args.project_hdfs_dir, args.load_pretrained_controlnet),
-                None,  # `None`: not load model ckpt here
-            )
-        controlnet = MVControlNetModel.from_unet(unet, conditioning_channels=opt.controlnet_input_channels)
-        path = f"out/{args.load_pretrained_controlnet}/checkpoints/{args.load_pretrained_controlnet_ckpt:06d}"
-        ckpt_path = os.path.join(path, "controlnet", "diffusion_pytorch_model.safetensors")
-        load_checkpoint_and_dispatch(controlnet, ckpt_path)
+    if args.load_pretrained_controlnet is not None or controlnet_lora_dir is not None:
+        if args.load_pretrained_controlnet is not None:
+            logger.info(f"Load MVUNet ControlNet checkpoint from [{args.load_pretrained_controlnet}] iteration [{args.load_pretrained_controlnet_ckpt:06d}]\n")
+            path = f"out/{args.load_pretrained_controlnet}/checkpoints/{args.load_pretrained_controlnet_ckpt:06d}"
+            if not os.path.exists(path):
+                args.load_pretrained_controlnet_ckpt = util.load_ckpt(
+                    os.path.join(args.output_dir, args.load_pretrained_controlnet, "checkpoints"),
+                    args.load_pretrained_controlnet_ckpt,
+                    None if args.hdfs_dir is None else os.path.join(args.project_hdfs_dir, args.load_pretrained_controlnet),
+                    None,  # `None`: not load model ckpt here
+                )
+            path = f"out/{args.load_pretrained_controlnet}/checkpoints/{args.load_pretrained_controlnet_ckpt:06d}"
+            ckpt_path = os.path.join(path, "controlnet", "diffusion_pytorch_model.safetensors")
+            controlnet = MVControlNetModel.from_unet(unet, conditioning_channels=opt.controlnet_input_channels)
+            if os.path.exists(ckpt_path):
+                load_checkpoint_and_dispatch(controlnet, ckpt_path)
+            elif controlnet_lora_dir is not None:
+                logger.warning(f"ControlNet checkpoint [{ckpt_path}] not found; fallback to UNet-initialized ControlNet plus LoRA.")
+            else:
+                raise FileNotFoundError(f"ControlNet checkpoint not found: {ckpt_path}")
+        else:
+            logger.info("No base ControlNet checkpoint provided; initializing ControlNet from UNet for LoRA adapter inference.\n")
+            controlnet = MVControlNetModel.from_unet(unet, conditioning_channels=opt.controlnet_input_channels)
+
+        if controlnet_lora_dir is not None:
+            controlnet, loaded = peft_util.build_peft_model_for_inference(controlnet, controlnet_lora_dir, opt.peft_adapter_name)
+            if loaded:
+                logger.info(f"Loaded ControlNet LoRA adapter from [{controlnet_lora_dir}]\n")
+            else:
+                logger.warning(f"ControlNet LoRA adapter not found at [{controlnet_lora_dir}]")
     else:
         controlnet = None
 

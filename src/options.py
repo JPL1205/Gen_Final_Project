@@ -2,9 +2,12 @@ from typing import *
 
 from dataclasses import dataclass
 from copy import deepcopy
+import os
 
 
-HDFS_DIR = "<HDFS_DIR>"  # data is stored in an internal HDFS in this project
+HDFS_DIR = os.environ.get("DIFFSPLAT_HDFS_DIR", "")
+LOCAL_DATA_DIR = os.environ.get("DIFFSPLAT_DATA_DIR", "/tmp/GObjaverse_parquet")
+LOCAL_VAL_DIR = os.environ.get("DIFFSPLAT_VAL_DIR", "/tmp/test_dataset")
 
 
 @dataclass
@@ -27,18 +30,15 @@ class Options:
     load_canny: bool = False
     load_depth: bool = False
     normalize_depth: bool = True  # to [0, 1]
-    dataset_name: Literal[
-        "gobj83k",
-        "gobj265k",
-    ] = "gobj83k"
+    dataset_name: str = "gobj83k"
     dataset_size: int = None  # set later
     prompt_embed_dir: Optional[str] = None  # set later
         ## ParquetDataset
-    file_dir_train: str = f"{HDFS_DIR}/GObjaverse_parquet"
-    file_name_train: str = None  # set later
-    file_dir_test: str = "/tmp/test_dataset"
-    file_name_test: str = "GObjaverse-val"
-    dataset_setup_script: str = f"mkdir -p /tmp/test_dataset && hdfs dfs -ls {HDFS_DIR}/GObjaverse_parquet/GObjaverse-val-* | grep '^-' | " + "awk '{print $8}' | xargs -n 1 -P 5 -I {} hdfs dfs -get {} /tmp/test_dataset"
+    file_dir_train: str = f"{HDFS_DIR}/GObjaverse_parquet" if HDFS_DIR else LOCAL_DATA_DIR
+    file_name_train: Optional[str] = None  # set later
+    file_dir_test: str = LOCAL_VAL_DIR
+    file_name_test: Optional[str] = None
+    dataset_setup_script: Optional[str] = None
 
     # GSRecon
     input_albedo: bool = False
@@ -155,6 +155,16 @@ class Options:
         ## Rendering loss
     rendering_loss_prob: float = 0.
     snr_gamma_rendering: float = 0.  # Min-SNR trick for rendering loss; `0.` menas not used
+        ## PEFT / LoRA
+    use_peft: bool = False
+    peft_type: Literal["lora"] = "lora"
+    peft_r: int = 16
+    peft_alpha: int = 16
+    peft_dropout: float = 0.
+    peft_bias: Literal["none", "all", "lora_only"] = "none"
+    peft_target_modules: Optional[str] = None  # comma-separated module names; `None` means auto defaults
+    peft_adapter_name: str = "default"
+    peft_safe_serialization: bool = True
 
     # Training
     chunk_size: int = 1  # chunk size for GSRecon and GSVAE inference to save memory
@@ -176,13 +186,19 @@ class Options:
 
     def __post_init__(self):
         if self.dataset_name == "gobj83k":
-            self.dataset_size = 83296
-            self.file_name_train = "GObjaverse-train-280k-83k"
+            if self.dataset_size is None:
+                self.dataset_size = 83296
+            if self.file_name_train is None:
+                self.file_name_train = "GObjaverse-train-280k-83k"
+            if self.file_name_test is None:
+                self.file_name_test = "GObjaverse-val"
         elif self.dataset_name == "gobj265k":
-            self.dataset_size = 265232
-            self.file_name_train = "GObjaverse-train-280k"
-        else:
-            raise ValueError(f"Unknown dataset name: {self.dataset_name}")
+            if self.dataset_size is None:
+                self.dataset_size = 265232
+            if self.file_name_train is None:
+                self.file_name_train = "GObjaverse-train-280k"
+            if self.file_name_test is None:
+                self.file_name_test = "GObjaverse-val"
 
 
 def _update_opt(opt: Options, **kwargs) -> Options:

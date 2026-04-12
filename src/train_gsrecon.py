@@ -192,10 +192,7 @@ def main():
     exp_dir = os.path.join(args.output_dir, args.tag)
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    if args.hdfs_dir is not None:
-        args.project_hdfs_dir = args.hdfs_dir
-        args.hdfs_dir = os.path.join(args.hdfs_dir, args.tag)
-        os.system(f"hdfs dfs -mkdir -p {args.hdfs_dir}")
+    args.hdfs_dir, args.project_hdfs_dir = util.prepare_hdfs_output_dir(args.hdfs_dir, args.tag)
 
     # Initialize the logger
     logging.basicConfig(
@@ -245,13 +242,11 @@ def main():
 
     # Prepare dataset
     if accelerator.is_local_main_process:
-        if not os.path.exists("/tmp/test_dataset"):
-            os.system(opt.dataset_setup_script)
+        util.maybe_run_dataset_setup(opt.file_dir_test, opt.dataset_setup_script)
     accelerator.wait_for_everyone()  # other processes wait for the main process
 
     # Load the training and validation dataset
-    assert opt.file_dir_train is not None and opt.file_name_train is not None and \
-        opt.file_dir_test is not None and opt.file_name_test is not None
+    assert opt.file_dir_train is not None and opt.file_dir_test is not None
 
     train_dataset = GObjaverseParquetDataset(
         data_source=ParquetChunkDataSource(opt.file_dir_train, opt.file_name_train),

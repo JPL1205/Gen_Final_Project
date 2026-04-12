@@ -47,7 +47,7 @@ class GObjaverseParquetDataset(ChunkedDataset):
         super().__init__(*args, **kwargs)
 
     def __len__(self):
-        return self.opt.dataset_size
+        return self.opt.dataset_size if self.opt.dataset_size is not None else len(self.data_source)
 
     def get_trainable_data_from_raw_data(self, raw_data_list) -> Dict[str, Tensor]:  # only `sample["__key__"]` is in str type
         assert len(raw_data_list) == 1

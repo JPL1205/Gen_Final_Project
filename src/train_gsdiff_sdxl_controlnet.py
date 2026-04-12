@@ -39,6 +39,7 @@ from src.options import opt_dict, Options
 from src.data import GObjaverseParquetDataset, ParquetChunkDataSource, MultiEpochsChunkedDataLoader, yield_forever
 from src.models import GSAutoencoderKL, GSRecon, get_optimizer, get_lr_scheduler
 import src.utils.util as util
+import src.utils.peft_util as peft_util
 import src.utils.geo_util as geo_util
 import src.utils.vis_util as vis_util
 
@@ -425,10 +426,7 @@ def main():
     exp_dir = os.path.join(args.output_dir, args.tag)
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    if args.hdfs_dir is not None:
-        args.project_hdfs_dir = args.hdfs_dir
-        args.hdfs_dir = os.path.join(args.hdfs_dir, args.tag)
-        os.system(f"hdfs dfs -mkdir -p {args.hdfs_dir}")
+    args.hdfs_dir, args.project_hdfs_dir = util.prepare_hdfs_output_dir(args.hdfs_dir, args.tag)
 
     # Initialize the logger
     logging.basicConfig(
@@ -478,13 +476,11 @@ def main():
 
     # Prepare dataset
     if accelerator.is_local_main_process:
-        if not os.path.exists("/tmp/test_dataset"):
-            os.system(opt.dataset_setup_script)
+        util.maybe_run_dataset_setup(opt.file_dir_test, opt.dataset_setup_script)
     accelerator.wait_for_everyone()  # other processes wait for the main process
 
     # Load the training and validation dataset
-    assert opt.file_dir_train is not None and opt.file_name_train is not None and \
-        opt.file_dir_test is not None and opt.file_name_test is not None
+    assert opt.file_dir_train is not None and opt.file_dir_test is not None
 
     train_dataset = GObjaverseParquetDataset(
         data_source=ParquetChunkDataSource(opt.file_dir_train, opt.file_name_train),
@@ -578,6 +574,7 @@ def main():
             low_cpu_mem_usage=False, ignore_mismatched_sizes=True, output_loading_info=True, **unet_from_pretrained_kwargs)
         logger.info(f"Loading info: {loading_info}\n")
 
+    controlnet_pretrained_path = None
     if args.load_pretrained_model is None:
         logger.info(f"Initializing ControlNet weights from MVUNet")
         controlnet = MVControlNetModel.from_unet(unet, conditioning_channels=opt.controlnet_input_channels)
@@ -590,9 +587,25 @@ def main():
             None,  # `None`: not load model ckpt here
             accelerator,  # manage the process states
         )
-        path = f"out/{args.load_pretrained_model}/checkpoints/{args.load_pretrained_model_ckpt:06d}"
+        controlnet_pretrained_path = f"out/{args.load_pretrained_model}/checkpoints/{args.load_pretrained_model_ckpt:06d}"
         controlnet = MVControlNetModel.from_unet(unet, conditioning_channels=opt.controlnet_input_channels)
-        load_checkpoint_and_dispatch(controlnet, os.path.join(path, "controlnet/diffusion_pytorch_model.safetensors"))
+        controlnet_weight_path = os.path.join(controlnet_pretrained_path, "controlnet/diffusion_pytorch_model.safetensors")
+        if opt.use_peft and not os.path.exists(controlnet_weight_path):
+            logger.info("No full ControlNet checkpoint found in pretrained run; initializing ControlNet weights from MVUNet.\n")
+        else:
+            load_checkpoint_and_dispatch(controlnet, controlnet_weight_path)
+
+    if opt.use_peft:
+        controlnet, peft_targets = peft_util.inject_lora_adapters(
+            controlnet,
+            opt,
+            default_target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+        )
+        logger.info(f"Enable LoRA adapters on ControlNet. Target modules: {peft_targets}\n")
+        if controlnet_pretrained_path is not None:
+            adapter_dir = os.path.join(controlnet_pretrained_path, "controlnet_lora")
+            if peft_util.load_lora_adapter_weights(controlnet, adapter_dir, opt.peft_adapter_name):
+                logger.info(f"Loaded LoRA adapter weights from [{adapter_dir}]\n")
 
     gsvae = GSAutoencoderKL(opt)
 
@@ -618,23 +631,26 @@ def main():
     unet.eval()
 
     trainable_module_names = []
-    if opt.trainable_modules is None:
-        controlnet.requires_grad_(True)
+    if opt.use_peft:
+        trainable_module_names = peft_util.get_trainable_param_names(controlnet)
     else:
-        controlnet.requires_grad_(False)
-        for name, module in controlnet.named_modules():
-            for module_name in tuple(opt.trainable_modules.split(",")):
-                if module_name in name:
-                    for params in module.parameters():
-                        params.requires_grad = True
-                    trainable_module_names.append(name)
+        if opt.trainable_modules is None:
+            controlnet.requires_grad_(True)
+        else:
+            controlnet.requires_grad_(False)
+            for name, module in controlnet.named_modules():
+                for module_name in tuple(opt.trainable_modules.split(",")):
+                    if module_name in name:
+                        for params in module.parameters():
+                            params.requires_grad = True
+                        trainable_module_names.append(name)
     logger.info(f"Trainable parameter names: {trainable_module_names}\n")
 
     # unet.enable_xformers_memory_efficient_attention()  # use `tF.scaled_dot_product_attention` instead
     # controlnet.enable_xformers_memory_efficient_attention()  # use `tF.scaled_dot_product_attention` instead
 
     # `accelerate` 0.16.0 will have better support for customized saving
-    if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
+    if (not opt.use_peft) and version.parse(accelerate.__version__) >= version.parse("0.16.0"):
         # Create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         def save_model_hook(models, weights, output_dir):
             if accelerator.is_main_process:
@@ -666,6 +682,8 @@ def main():
 
     params, params_lr_mult, names_lr_mult = [], [], []
     for name, param in controlnet.named_parameters():
+        if not param.requires_grad:
+            continue
         if opt.name_lr_mult is not None:
             for k in opt.name_lr_mult.split(","):
                 if k in name:
@@ -720,6 +738,7 @@ def main():
     lr_scheduler: AcceleratedScheduler
     train_loader: DataLoaderShard
     val_loader: DataLoaderShard
+    trainable_params = [p for p in controlnet.parameters() if p.requires_grad]
 
     # For mixed precision training we cast all non-trainable weigths to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1131,7 +1150,7 @@ def main():
             # Backpropagate
             accelerator.backward(loss.mean())
             if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(controlnet.parameters(), args.max_grad_norm)
+                accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
 
             optimizer.step()
             lr_scheduler.step()
@@ -1205,6 +1224,12 @@ def main():
                     accelerator.save_state(os.path.join(ckpt_dir, f"{global_update_step:06d}"))
                 accelerator.wait_for_everyone()  # ensure all processes have finished saving
                 if accelerator.is_main_process:
+                    if opt.use_peft:
+                        peft_util.save_lora_adapter(
+                            accelerator.unwrap_model(controlnet),
+                            os.path.join(ckpt_dir, f"{global_update_step:06d}", "controlnet_lora"),
+                            safe_serialization=opt.peft_safe_serialization,
+                        )
                     if args.hdfs_dir is not None:
                         util.save_ckpt(ckpt_dir, global_update_step, args.hdfs_dir)
                 gc.collect()

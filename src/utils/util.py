@@ -6,6 +6,7 @@ from accelerate import Accelerator
 from src.options import Options
 
 import os
+import shutil
 from omegaconf import OmegaConf
 from accelerate import load_checkpoint_and_dispatch
 
@@ -108,6 +109,58 @@ def ensure_sysrun(cmd: str):
             break
         else:
             print(f"Retry running {cmd}")
+
+
+def prepare_hdfs_output_dir(requested_hdfs_dir: Optional[str], tag: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Prepare remote checkpoint dir if HDFS is available.
+
+    Returns:
+        (hdfs_dir_for_current_run, project_hdfs_root_dir)
+    """
+    if requested_hdfs_dir is None:
+        return None, None
+
+    project_hdfs_dir = requested_hdfs_dir
+    if shutil.which("hdfs") is None:
+        print(
+            f"[Warning] HDFS dir was provided [{requested_hdfs_dir}] but `hdfs` command is not available. "
+            "Remote checkpoint sync is disabled."
+        )
+        return None, project_hdfs_dir
+
+    hdfs_dir = os.path.join(requested_hdfs_dir, tag)
+    ensure_sysrun(f"hdfs dfs -mkdir -p {hdfs_dir}")
+    return hdfs_dir, project_hdfs_dir
+
+
+def maybe_run_dataset_setup(file_dir_test: Optional[str], dataset_setup_script: Optional[str]):
+    """
+    Run optional dataset setup only when test/val directory is missing.
+    """
+    if file_dir_test is None or os.path.exists(file_dir_test):
+        return
+
+    if dataset_setup_script is None or str(dataset_setup_script).strip() == "":
+        print(
+            f"[Warning] Validation dataset directory [{file_dir_test}] does not exist and no "
+            "`dataset_setup_script` is configured."
+        )
+        return
+
+    if "hdfs" in dataset_setup_script and shutil.which("hdfs") is None:
+        print(
+            f"[Warning] Validation dataset directory [{file_dir_test}] does not exist and setup script "
+            "requires `hdfs`, but `hdfs` command is unavailable."
+        )
+        return
+
+    result = os.system(dataset_setup_script)
+    if result != 0:
+        print(
+            f"[Warning] dataset_setup_script exited with non-zero status ({result}). "
+            f"Script: {dataset_setup_script}"
+        )
 
 
 def get_hdfs_files(hdfs_path: str) -> List[str]:
