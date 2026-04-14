@@ -532,26 +532,12 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps,
 #  Language switch
 # ══════════════════════════════════════════════════════════════
 
-def switch_lang(lang_label: str,
-                header_html, sec_config, lbl_tag, lbl_train_dir, lbl_val_dir,
-                lbl_ds_size, lbl_fname_tr, lbl_fname_val, lbl_embed_dir,
-                lbl_steps, lbl_lr, lbl_batch, lbl_accum, lbl_load_model,
-                lbl_lora_acc, lbl_use_lora, lbl_lora_r, lbl_lora_a,
-                btn_start, btn_stop, lbl_status, lbl_chart, btn_refresh,
-                sec_terminal,
-                sec_filter, lbl_val_exp, btn_refresh_exp, sec_metrics,
-                lbl_psnr, lbl_lpips, lbl_ssim, lbl_gallery, tip_val,
-                sec_input, lbl_prompt, lbl_neg_prompt, lbl_image_in,
-                sec_params, lbl_cfg, lbl_seed, lbl_steps_inf,
-                sec_ckpt, lbl_infer_exp, lbl_infer_ckpt,
-                sec_output_opt, lbl_save_ply, lbl_vid_type, btn_gen,
-                lbl_infer_status, sec_preview, lbl_out_img, lbl_out_vid, tip_infer):
+def switch_lang(lang_label: str):
     """Return gr.update() for every translatable component."""
     lang = "zh" if lang_label == "中文" else "en"
     with S.lock:
         S.lang = lang
     t = STRINGS[lang]
-    chart = get_charts(lang)
 
     return (
         gr.update(value=t["header_html"]),
@@ -575,10 +561,9 @@ def switch_lang(lang_label: str,
         gr.update(value=t["btn_start"]),
         gr.update(value=t["btn_stop"]),
         gr.update(label=t["lbl_status"]),
-        gr.update(label=t["lbl_chart"]),
+        gr.update(label=t["lbl_chart"], value=get_charts(lang)),
         gr.update(value=t["btn_refresh"]),
         gr.update(value=t["sec_terminal"]),
-        chart,
         gr.update(value=t["sec_filter"]),
         gr.update(label=t["lbl_val_exp"]),
         gr.update(value=t["btn_refresh_exp"]),
@@ -647,7 +632,7 @@ body, .gradio-container { font-family: 'Inter', 'Helvetica Neue', sans-serif !im
 def build_ui():
     L = STRINGS["en"]   # initial language = English
 
-    with gr.Blocks(title="GS-Diff Lab") as demo:
+    with gr.Blocks(title="GS-Diff Lab", css=CSS) as demo:
 
         # ─── Header ───
         with gr.Row(equal_height=True):
@@ -829,9 +814,6 @@ def build_ui():
                 )
 
         # ─── Language switch: wire ALL translatable components ───
-        # Inputs: just the radio value (dummy rest are ignored by gradio,
-        #         we pass them so the function signature stays simple).
-        # We use a lambda to forward the lang + collect all component refs.
         lang_outputs = [
             header_html,
             sec_config, tag_in, train_dir, val_dir,
@@ -840,7 +822,6 @@ def build_ui():
             lora_acc, use_lora, lora_r, lora_a,
             start_btn, stop_btn, status_bar, chart, refresh_btn,
             sec_terminal,
-            chart,                        # chart updated again with new titles
             sec_filter, val_exp_dd, btn_refresh_exp, sec_metrics,
             psnr_m, lpips_m, ssim_m, val_gallery, tip_val,
             sec_input, prompt_in, neg_prompt, image_in,
@@ -852,7 +833,7 @@ def build_ui():
 
         lang_radio.change(
             fn=switch_lang,
-            inputs=[lang_radio] + [gr.State()] * (len(lang_outputs) - 1),
+            inputs=[lang_radio],
             outputs=lang_outputs,
         )
 
@@ -867,5 +848,4 @@ if __name__ == "__main__":
         server_port=7860,
         share=False,
         show_error=True,
-        css=CSS,
     )
