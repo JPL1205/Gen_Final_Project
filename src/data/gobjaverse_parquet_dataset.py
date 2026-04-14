@@ -162,6 +162,13 @@ class GObjaverseParquetDataset(ChunkedDataset):
             normals = normals * return_dict["mask"] + (1. - return_dict["mask"])  # (V, 3, 512, 512), to white bg
             return_dict["normal"] = normals
             return_dict.pop("original_C2W")  # original C2W is only used for normal normalization
+        elif self.opt.input_normal and "normal" not in return_dict:
+            # Provide zero-filled normal when input_normal=True but load_normal=False (e.g. smoke-test datasets)
+            V = return_dict["image"].shape[0]
+            H, W = return_dict["image"].shape[-2:]
+            return_dict["normal"] = torch.ones(V, 3, H, W)  # white bg placeholder
+            if "original_C2W" in return_dict:
+                return_dict.pop("original_C2W")
 
         # OpenGL to COLMAP camera for Gaussian renderer
         return_dict["C2W"][:, :3, 1:3] *= -1
@@ -183,6 +190,11 @@ class GObjaverseParquetDataset(ChunkedDataset):
             return_dict["coord"] = coords
             if not self.opt.load_depth:
                 return_dict.pop("depth")
+        elif self.opt.input_coord and "coord" not in return_dict:
+            # Provide zero-filled coord when input_coord=True but load_coord=False (e.g. smoke-test datasets)
+            V = return_dict["image"].shape[0]
+            H, W = return_dict["image"].shape[-2:]
+            return_dict["coord"] = torch.ones(V, 3, H, W)  # white bg placeholder
 
         if self.opt.load_depth:
             depths = return_dict["depth"].unsqueeze(1) * return_dict["mask"]  # (V, 1, 512, 512), to black bg

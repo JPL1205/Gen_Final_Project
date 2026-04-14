@@ -50,7 +50,15 @@ def load_ckpt(
     else:
         ckpt_dir = f"{ckpt_dir}/{ckpt_iter:06d}"
         if not os.path.exists(f"{ckpt_dir}/zero_to_fp32.py"):
-            load_checkpoint_and_dispatch(model, ckpt_path, strict=strict)
+            # Resolve directory path to actual checkpoint file for newer accelerate versions
+            resolved_path = ckpt_path
+            if os.path.isdir(ckpt_path):
+                for fname in ("model.safetensors", "pytorch_model.bin"):
+                    candidate = os.path.join(ckpt_path, fname)
+                    if os.path.exists(candidate):
+                        resolved_path = candidate
+                        break
+            load_checkpoint_and_dispatch(model, resolved_path, strict=strict)
         else:  # from DeepSpeed
             if accelerator is not None:
                 if accelerator.is_main_process:
@@ -58,7 +66,15 @@ def load_ckpt(
                 accelerator.wait_for_everyone()  # wait before preparing checkpoints by the main process
             else:
                 ensure_sysrun(f"python3 {ckpt_dir}/zero_to_fp32.py {ckpt_dir} {ckpt_dir} --safe_serialization")
-            load_checkpoint_and_dispatch(model, ckpt_path, strict=strict)
+            # Resolve directory path to actual checkpoint file for newer accelerate versions
+            resolved_path = ckpt_path
+            if os.path.isdir(ckpt_path):
+                for fname in ("model.safetensors", "pytorch_model.bin"):
+                    candidate = os.path.join(ckpt_path, fname)
+                    if os.path.exists(candidate):
+                        resolved_path = candidate
+                        break
+            load_checkpoint_and_dispatch(model, resolved_path, strict=strict)
 
         return model
 
