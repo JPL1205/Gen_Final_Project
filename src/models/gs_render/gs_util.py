@@ -208,11 +208,11 @@ def render(
         debug=False,
         # cf. RaDe-GS
         require_depth=render_dn,
-        require_coord=False,
+        # require_coord=False,  # not supported in older diff_gaussian_rasterization versions
     )
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    image, _, _, _, depth, _, alpha, normal = rasterizer(  # not used: radii, coord, mcoord, mdepth
+    image, _, depth, _, alpha, normal = rasterizer(  # not used: radii, mdepth  (coord/mcoord removed in older API)
         means3D=pc.xyz,
         means2D=torch.zeros_like(pc.xyz, dtype=torch.float32, device=pc.xyz.device),
         shs=None,
