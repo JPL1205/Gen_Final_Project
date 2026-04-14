@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>GS-Diff Lab Interactive Prototype</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .gradio-shadow { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .active-tab { border-bottom: 2px solid #ea580c; color: #ea580c; font-weight: bold; }
+    </style>
+</head>
+
+<body class="bg-gray-50 min-h-screen p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <div class="flex justify-between items-center mb-6 bg-white p-4 rounded-xl border">
+            <div>
+                <h1 id="main-title" class="text-2xl font-bold text-gray-800">🚀 GS-Diff 微调与推理工作站</h1>
+                <p class="text-sm text-gray-500 font-mono">Base: gsdiff_gobj83k_sd15__render</p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <span class="text-sm text-gray-400">Language:</span>
+                <select id="lang-selector" onchange="toggleLanguage()" class="border rounded p-1 text-sm outline-none">
+                    <option value="zh">中文 (Chinese)</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="flex space-x-8 border-b mb-8">
+            <button onclick="switchTab('train')" id="tab-btn-train" class="pb-3 px-2 active-tab transition-all">1. <span data-zh="训练监控" data-en="Training Monitor">训练监控</span></button>
+            <button onclick="switchTab('val')" id="tab-btn-val" class="pb-3 px-2 text-gray-500 hover:text-orange-600 transition-all">2. <span data-zh="验证对比" data-en="Validation Viewer">验证对比</span></button>
+            <button onclick="switchTab('infer')" id="tab-btn-infer" class="pb-3 px-2 text-gray-500 hover:text-orange-600 transition-all">3. <span data-zh="推理生成" data-en="Inference">推理生成</span></button>
+        </div>
+
+        <div id="content-train" class="tab-content active animate-in fade-in duration-300">
+            <div class="grid grid-cols-12 gap-6">
+                <div class="col-span-12 lg:col-span-4 space-y-4">
+                    <div class="bg-white p-6 rounded-2xl border gradio-shadow">
+                        <h3 class="font-bold mb-4 text-gray-700" data-zh="配置训练" data-en="Training Setup">配置训练</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="text-xs font-bold text-gray-400 uppercase" data-zh="训练脚本" data-en="Script">训练脚本</label>
+                                <select class="w-full mt-1 p-2 bg-gray-50 border rounded text-sm"><option>train_gsdiff_sd.py</option></select>
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-400 uppercase" data-zh="数据集" data-en="Dataset">数据集</label>
+                                <select class="w-full mt-1 p-2 bg-gray-50 border rounded text-sm"><option>my_object_dataset.parquet</option></select>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="text-xs font-bold text-gray-400 uppercase">Steps</label>
+                                    <input type="number" class="w-full mt-1 p-2 border rounded text-sm" value="10000">
+                                </div>
+                                <div>
+                                    <label class="text-xs font-bold text-gray-400 uppercase">LR</label>
+                                    <input type="text" class="w-full mt-1 p-2 border rounded text-sm" value="5e-5">
+                                </div>
+                            </div>
+                            <button class="w-full py-4 bg-orange-600 text-white font-black rounded-xl hover:bg-orange-700 transition shadow-lg shadow-orange-100" data-zh="启动训练" data-en="Start Training">启动训练</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-span-12 lg:col-span-8 bg-slate-900 rounded-2xl p-6 font-mono text-sm shadow-inner min-h-[400px]">
+                    <div class="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                        <span class="text-orange-500 font-bold" data-zh="终端输出" data-en="Terminal Output">终端输出</span>
+                        <span class="text-slate-500 text-xs">Training: Active</span>
+                    </div>
+                    <div class="space-y-1 text-slate-300">
+                        <p class="text-slate-500">[2026-04-14 10:00:01] Initializing weights...</p>
+                        <p class="text-blue-400">[INFO] LoRA layers injected into Unet.</p>
+                        <p class="text-green-400">Step 450/10000: loss=0.045, lr=5e-5</p>
+                        <p class="animate-pulse">_</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="content-val" class="tab-content">
+            <div class="grid grid-cols-12 gap-6">
+                <div class="col-span-12 lg:col-span-3 space-y-4">
+                    <div class="bg-white p-6 rounded-2xl border gradio-shadow">
+                        <h3 class="font-bold mb-4 text-gray-700" data-zh="结果筛选" data-en="Filter Results">结果筛选</h3>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="text-xs font-bold text-gray-400 uppercase" data-zh="实验版本" data-en="Experiment">实验版本</label>
+                                <select class="w-full mt-1 p-2 bg-gray-50 border rounded text-sm outline-none focus:border-orange-500">
+                                    <option>finetune_v1_lora</option>
+                                    <option>baseline_sd15</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-xs font-bold text-gray-400 uppercase" data-zh="训练步数 (Checkpoint)" data-en="Checkpoint Step">训练步数 (Checkpoint)</label>
+                                <input type="range" class="w-full mt-2 accent-orange-600">
+                                <div class="flex justify-between text-[10px] text-gray-400 font-mono">
+                                    <span>0</span><span>5000</span><span>10000</span>
+                                </div>
+                            </div>
+                            <button class="w-full py-2 bg-gray-100 text-gray-600 text-sm font-bold rounded-lg hover:bg-gray-200 transition" data-zh="刷新数据" data-en="Refresh Data">刷新数据</button>
+                        </div>
+
+                        <div class="mt-8 pt-6 border-t">
+                            <h3 class="font-bold mb-4 text-gray-700" data-zh="关键指标" data-en="Key Metrics">关键指标</h3>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div class="bg-slate-50 p-2 rounded border border-slate-100">
+                                    <p class="text-[10px] text-gray-400 uppercase">PSNR</p>
+                                    <p class="text-lg font-black text-slate-700">28.42</p>
+                                </div>
+                                <div class="bg-slate-50 p-2 rounded border border-slate-100">
+                                    <p class="text-[10px] text-gray-400 uppercase">SSIM</p>
+                                    <p class="text-lg font-black text-slate-700">0.912</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-span-12 lg:col-span-9 space-y-4">
+                    <div class="bg-white p-6 rounded-2xl border gradio-shadow">
+                        <div class="mb-6 bg-orange-50 p-4 rounded-xl border border-orange-100">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-sm font-bold text-orange-700" data-zh="相机视角切换 (0-39)" data-en="Camera View Switch (0-39)">相机视角切换 (0-39)</label>
+                                <span class="bg-orange-600 text-white text-xs px-2 py-0.5 rounded-full font-mono">View ID: 07</span>
+                            </div>
+                            <input type="range" min="0" max="39" value="7" class="w-full accent-orange-600">
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div class="space-y-2">
+                                <div class="flex justify-between items-center px-1">
+                                    <span class="text-xs font-bold text-gray-400 tracking-widest">GROUND TRUTH</span>
+                                    <span class="text-[10px] bg-gray-100 text-gray-500 px-2 rounded">Original RGBA</span>
+                                </div>
+                                <div class="aspect-square bg-gray-100 rounded-xl flex items-center justify-center border-2 border-dashed overflow-hidden relative group">
+                                    <img src="https://via.placeholder.com/512/f3f4f6/94a3b8?text=GT+View+07" class="w-full h-full object-cover">
+                                    <div class="absolute inset-0 bg-black/5 group-hover:bg-transparent transition"></div>
+                                </div>
+                            </div>
+                            <div class="space-y-2">
+                                <div class="flex justify-between items-center px-1">
+                                    <span class="text-xs font-bold text-orange-600 tracking-widest">PREDICTION</span>
+                                    <span class="text-[10px] bg-orange-100 text-orange-600 px-2 rounded">Model Render</span>
+                                </div>
+                                <div class="aspect-square bg-slate-50 rounded-xl flex items-center justify-center border-2 border-orange-200 shadow-inner overflow-hidden relative">
+                                    <img src="https://via.placeholder.com/512/fff7ed/ea580c?text=Pred+Step+2500" class="w-full h-full object-cover">
+                                    <div class="absolute bottom-0 left-0 right-0 h-1 bg-gray-200">
+                                        <div class="h-full bg-orange-500 w-full"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mt-6 flex items-center space-x-2 text-gray-400 italic">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span class="text-xs" data-zh="提示：拖动上方橙色滑块可巡检不同角度的一致性" data-en="Tip: Drag the orange slider to inspect consistency from different angles">提示：拖动上方橙色滑块可巡检不同角度的一致性</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="content-infer" class="tab-content">
+            <div class="grid grid-cols-12 gap-8">
+                <div class="col-span-12 lg:col-span-5 space-y-6">
+                    <div class="bg-white p-6 rounded-2xl border gradio-shadow">
+                        <div class="flex bg-gray-100 p-1 rounded-lg mb-6 text-sm font-bold">
+                            <button class="flex-1 py-2 bg-white rounded shadow text-orange-600" data-zh="文本生成" data-en="Text-to-3D">文本生成</button>
+                            <button class="flex-1 py-2 text-gray-500 hover:text-gray-700" data-zh="图像生成" data-en="Image-to-3D">图像生成</button>
+                        </div>
+                        <div class="space-y-4">
+                            <div class="group border-2 border-dashed border-gray-200 rounded-2xl p-8 flex flex-col items-center justify-center hover:bg-orange-50 hover:border-orange-300 transition cursor-pointer">
+                                <div class="text-4xl mb-2 group-hover:scale-110 transition">🖼️</div>
+                                <p class="text-sm text-gray-500" data-zh="点击或拖入物体图片" data-en="Click or Drag Image Here">点击或拖入物体图片</p>
+                            </div>
+                            <textarea class="w-full p-4 bg-gray-50 border rounded-xl text-sm h-32 outline-none focus:border-orange-500" placeholder="A chair made of ice..."></textarea>
+                            <button class="w-full py-4 bg-slate-800 text-white font-bold rounded-xl hover:bg-slate-900 transition" data-zh="立即生成 3D" data-en="Generate 3D Now">立即生成 3D</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-span-12 lg:col-span-7 bg-white p-6 rounded-2xl border gradio-shadow">
+                    <div class="aspect-video bg-slate-900 rounded-xl flex items-center justify-center relative shadow-2xl overflow-hidden">
+                        <div class="absolute inset-0 bg-gradient-to-tr from-slate-800 to-transparent opacity-50"></div>
+                        <div class="text-center z-10">
+                            <div class="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                            <p class="text-slate-400 font-medium" data-zh="360° 预览生成中..." data-en="360° Preview Generating...">360° 预览生成中...</p>
+                        </div>
+                    </div>
+                    <div class="mt-6 flex justify-between items-center px-2">
+                        <div class="flex space-x-4">
+                            <button class="text-sm font-bold text-orange-600 hover:underline">Download .PLY</button>
+                            <button class="text-sm font-bold text-orange-600 hover:underline">Download .OBJ</button>
+                        </div>
+                        <span class="text-xs text-gray-400 font-mono italic text-right" data-zh="提示：推理基于微调后的 LoRA 权重" data-en="Note: Inference based on finetuned LoRA weights">提示：推理基于微调后的 LoRA 权重</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab 切换逻辑
+        function switchTab(tabId) {
+            // 隐藏所有内容
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            // 取消所有按钮高亮
+            document.querySelectorAll('button[id^="tab-btn-"]').forEach(b => b.classList.remove('active-tab', 'text-orange-600'));
+            document.querySelectorAll('button[id^="tab-btn-"]').forEach(b => b.classList.add('text-gray-500'));
+            
+            // 激活当前
+            document.getElementById('content-' + tabId).classList.add('active');
+            document.getElementById('tab-btn-' + tabId).classList.add('active-tab');
+            document.getElementById('tab-btn-' + tabId).classList.remove('text-gray-500');
+        }
+
+        // 语言切换逻辑
+        function toggleLanguage() {
+            const lang = document.getElementById('lang-selector').value;
+            const elements = document.querySelectorAll('[data-zh]');
+            
+            elements.forEach(el => {
+                el.innerText = el.getAttribute('data-' + lang);
+            });
+
+            // 特殊处理标题
+            const title = document.getElementById('main-title');
+            if(lang === 'zh') {
+                title.innerText = "🚀 GS-Diff 微调与推理工作站";
+            } else {
+                title.innerText = "🚀 GS-Diff Finetune & Inference Lab";
+            }
+        }
+    </script>
+</body>
+</html>
