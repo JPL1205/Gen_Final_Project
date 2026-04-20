@@ -9,6 +9,7 @@ Launch:
 import os
 import re
 import sys
+import time
 import glob
 import threading
 import subprocess
@@ -20,10 +21,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # ─────────────────────────── Constants ──────────────────────────────
-PROJECT_ROOT = Path(__file__).parent
-OUT_DIR      = PROJECT_ROOT / "out"
-DATA_DIR     = PROJECT_ROOT / "data"
-CONDA_ENV    = "diffsplat_sm120"
+PROJECT_ROOT   = Path(__file__).parent
+OUT_DIR        = PROJECT_ROOT / "out"
+DATA_DIR       = PROJECT_ROOT / "data"
+CONDA_ENV      = "diffsplat_sm120"
+MODEL_TEXT     = "gsdiff_gobj83k_sd15__render"
+MODEL_IMAGE    = "gsdiff_gobj83k_sd15_image__render"
 
 # ─────────────────────────── i18n strings ───────────────────────────
 STRINGS = {
@@ -85,6 +88,8 @@ STRINGS = {
         "lbl_cfg":          "Guidance Scale",
         "lbl_seed":         "Seed",
         "lbl_steps_inf":    "Diffusion Steps",
+        "lbl_elevation":    "Image Elevation (deg)",
+        "lbl_use_elevest":  "Estimate elevation automatically",
         "sec_ckpt":         "### 📂 Checkpoint",
         "lbl_infer_exp":    "Experiment",
         "lbl_infer_ckpt":   "Checkpoint Step",
@@ -161,6 +166,8 @@ STRINGS = {
         "lbl_cfg":          "引导强度 (CFG Scale)",
         "lbl_seed":         "随机种子",
         "lbl_steps_inf":    "扩散步数",
+        "lbl_elevation":    "图像仰角（度）",
+        "lbl_use_elevest":  "自动估计仰角",
         "sec_ckpt":         "### 📂 Checkpoint",
         "lbl_infer_exp":    "实验版本",
         "lbl_infer_ckpt":   "Checkpoint 步数",
@@ -217,18 +224,19 @@ def _list_checkpoints(tag: str) -> list:
     return sorted([d.name for d in ckpt_dir.iterdir() if d.is_dir()])
 
 
-def _get_unet_in_channels(tag: str, ckpt_step: str) -> Optional[int]:
+def _get_unet_in_channels(tag: str, ckpt_step) -> Optional[int]:
     import json
-    config_path = OUT_DIR / tag / "checkpoints" / ckpt_step / "unet_ema" / "config.json"
-    if not config_path.exists():
-        config_path = OUT_DIR / tag / "checkpoints" / ckpt_step / "unet" / "config.json"
-    if not config_path.exists():
-        return None
-    try:
-        with open(config_path) as f:
-            return json.load(f).get("in_channels")
-    except Exception:
-        return None
+    # Normalize: "013020" or 13020 → "013020"
+    ckpt_folder = f"{int(ckpt_step):06d}"
+    for subfolder in ("unet_ema", "unet"):
+        config_path = OUT_DIR / tag / "checkpoints" / ckpt_folder / subfolder / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    return json.load(f).get("in_channels")
+            except Exception:
+                return None
+    return None
 
 
 def _get_val_images(tag: str) -> list:
@@ -474,7 +482,63 @@ def update_ckpt_list(tag: str):
     return gr.Dropdown(choices=ckpts, value=ckpts[-1] if ckpts else None)
 
 
-def run_inference(prompt, image, cfg_scale, seed, num_steps,
+def _progress_desc(stage: str, value: float) -> str:
+    value = max(0.0, min(1.0, float(value)))
+    return f"{stage} - {value * 100:.1f}%"
+
+
+def _update_progress(progress, current: float, target: float, stage: str):
+    value = max(current, target)
+    progress(value, desc=_progress_desc(stage, value))
+    return value
+
+
+def _collect_recent_outputs(infer_dir: Path, start_time: float):
+    files = []
+    for ext in ("*.png", "*.gif", "*.mp4"):
+        files.extend(p for p in infer_dir.glob(ext) if p.is_file())
+    recent = [p for p in files if p.stat().st_mtime >= start_time - 1.0]
+    recent.sort(key=lambda p: (p.stat().st_mtime, p.name))
+    return recent
+
+
+def _pick_output_pair(infer_dir: Path, start_time: float):
+    recent = _collect_recent_outputs(infer_dir, start_time)
+    image_candidates = [p for p in recent if p.name.endswith("_gs.png")]
+    video_candidates = [p for p in recent if p.suffix.lower() in {".gif", ".mp4"}]
+
+    out_image = str(image_candidates[-1]) if image_candidates else None
+    out_video = None
+
+    if out_image:
+        image_stem = Path(out_image).name[:-7]  # trim "_gs.png"
+        matching_videos = [p for p in video_candidates if p.stem == image_stem]
+        if matching_videos:
+            matching_videos.sort(key=lambda p: (p.stat().st_mtime, p.name))
+            out_video = str(matching_videos[-1])
+
+    if out_video is None and video_candidates:
+        out_video = str(video_candidates[-1])
+
+    if out_image is None:
+        fallback_pngs = sorted(
+            [p for p in infer_dir.glob("*_gs.png") if p.is_file()],
+            key=lambda p: (p.stat().st_mtime, p.name),
+        )
+        out_image = str(fallback_pngs[-1]) if fallback_pngs else None
+
+    if out_video is None:
+        fallback_videos = sorted(
+            [p for p in infer_dir.glob("*.gif") if p.is_file()] +
+            [p for p in infer_dir.glob("*.mp4") if p.is_file()],
+            key=lambda p: (p.stat().st_mtime, p.name),
+        )
+        out_video = str(fallback_videos[-1]) if fallback_videos else None
+
+    return out_image, out_video
+
+
+def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elevest,
                   exp_tag, ckpt_step, save_ply, output_video_type,
                   progress=gr.Progress()):
     if not exp_tag:
@@ -485,13 +549,20 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps,
         return None, None, "⚠️ Enter a prompt or upload an image."
 
     in_ch = _get_unet_in_channels(exp_tag, ckpt_step)
-    if image is not None and in_ch is not None and in_ch < 11:
-        return None, None, (
-            f"⚠️ This checkpoint has {in_ch} input channels (text-only model).\n"
-            "Image conditioning requires an image-conditioned checkpoint (11ch).\n"
-            "Please use a text prompt only, or download the image-conditioned checkpoint "
-            "(e.g. gsdiff_gobj83k_sd15_image__render)."
-        )
+    if image is not None:
+        if in_ch is None:
+            return None, None, (
+                f"⚠️ Cannot read checkpoint config for [{exp_tag} / {ckpt_step}].\n"
+                "Image conditioning cannot be verified. Please use a text prompt only."
+            )
+        if in_ch < 11:
+            return None, None, (
+                f"⚠️ Checkpoint [{exp_tag}] has {in_ch} input channels — text-only model.\n"
+                "Image conditioning requires an image-conditioned checkpoint (11ch).\n"
+                "Please:\n"
+                "  1) Use a text prompt only with this checkpoint, OR\n"
+                "  2) Download: python download_ckpt.py --model_type sd15 --image_cond"
+            )
 
     image_tmp_path = None
     if image is not None:
@@ -515,6 +586,10 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps,
     ]
     if image_tmp_path:
         cmd += ["--image_path", image_tmp_path]
+        if use_elevest:
+            cmd.append("--use_elevest")
+        else:
+            cmd += ["--elevation", str(float(elevation))]
     if output_video_type != "none":
         cmd += ["--output_video_type", output_video_type]
     if save_ply:
@@ -523,36 +598,56 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps,
     env = os.environ.copy()
     env["PYTHONPATH"] = str(PROJECT_ROOT)
 
-    progress(0, desc="Starting inference...")
+    infer_dir = OUT_DIR / exp_tag / "inference"
+    start_time = time.time()
+    progress_value = 0.0
+    progress_value = _update_progress(progress, progress_value, 0.0, "Starting inference...")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         cwd=str(PROJECT_ROOT), env=env,
     )
     log_buf = []
+    stage_patterns = [
+        ("Load image", 0.08),
+        ("No image condition", 0.08),
+        ("Load checkpoint", 0.22),
+        ("Load GSVAE checkpoint", 0.32),
+        ("Load GSRecon checkpoint", 0.42),
+        ("Load ElevEst checkpoint", 0.48),
+        ("Elevation estimation", 0.55),
+        ("Rendering", 0.70),
+        ("Inference finished!", 0.98),
+    ]
     for raw in iter(proc.stdout.readline, b""):
         line = raw.decode("utf-8", errors="replace").rstrip()
         log_buf.append(line)
-        if "Rendering" in line:
-            progress(0.5, desc="Rendering...")
+        for marker, target in stage_patterns:
+            if marker in line:
+                progress_value = _update_progress(progress, progress_value, target, marker)
+                break
+
+        render_match = re.search(r"Rendering:\s+(\d+)%", line)
+        if render_match:
+            render_pct = int(render_match.group(1)) / 100.0
+            progress_value = _update_progress(
+                progress,
+                progress_value,
+                0.70 + 0.28 * render_pct,
+                "Rendering",
+            )
     proc.stdout.close()
     proc.wait()
 
     if proc.returncode != 0:
         return None, None, "❌ Inference failed:\n" + "\n".join(log_buf[-20:])
 
-    infer_dir = OUT_DIR / exp_tag / "inference"
     if not infer_dir.exists():
         candidates = sorted((OUT_DIR / exp_tag).glob("infer*"))
         infer_dir  = candidates[-1] if candidates else OUT_DIR / exp_tag
 
-    png_files = sorted(glob.glob(str(infer_dir / "*.png")))
-    gif_files = sorted(glob.glob(str(infer_dir / "*.gif")))
-    mp4_files = sorted(glob.glob(str(infer_dir / "*.mp4")))
-
-    out_image = png_files[-1] if png_files else None
-    out_video = gif_files[-1] if gif_files else (mp4_files[-1] if mp4_files else None)
-    progress(1.0, desc="Done")
+    out_image, out_video = _pick_output_pair(infer_dir, start_time)
+    progress(1.0, desc=_progress_desc("Done", 1.0))
     return out_image, out_video, f"✅ Done. Output dir: {infer_dir}"
 
 
@@ -609,6 +704,8 @@ def switch_lang(lang_label: str):
         gr.update(label=t["lbl_cfg"]),
         gr.update(label=t["lbl_seed"]),
         gr.update(label=t["lbl_steps_inf"]),
+        gr.update(label=t["lbl_elevation"]),
+        gr.update(label=t["lbl_use_elevest"]),
         gr.update(value=t["sec_ckpt"]),
         gr.update(label=t["lbl_infer_exp"]),
         gr.update(label=t["lbl_infer_ckpt"]),
@@ -791,13 +888,13 @@ def build_ui():
                     with gr.Column(scale=5, min_width=360):
                         sec_input = gr.Markdown(L["sec_input"])
                         with gr.Tabs():
-                            with gr.Tab("✏️ Text"):
+                            with gr.Tab("✏️ Text") as tab_text:
                                 prompt_in  = gr.Textbox(label=L["lbl_prompt"],
                                                         placeholder=L["ph_prompt"],
                                                         lines=4)
                                 neg_prompt = gr.Textbox(label=L["lbl_neg_prompt"],
                                                         value="", lines=2)
-                            with gr.Tab("🖼 Image"):
+                            with gr.Tab("🖼 Image") as tab_image:
                                 image_in = gr.Image(label=L["lbl_image_in"],
                                                     type="numpy", height=240)
                         gr.Markdown("---")
@@ -808,10 +905,13 @@ def build_ui():
                             seed_in    = gr.Number(label=L["lbl_seed"], value=42, precision=0)
                         steps_inf = gr.Slider(label=L["lbl_steps_inf"],
                                               minimum=10, maximum=50, value=20, step=5)
+                        with gr.Row():
+                            elevation_in = gr.Number(label=L["lbl_elevation"], value=20, precision=1)
+                            use_elevest_cb = gr.Checkbox(label=L["lbl_use_elevest"], value=False)
                         gr.Markdown("---")
                         sec_ckpt       = gr.Markdown(L["sec_ckpt"])
                         _init_exps  = _list_experiments()
-                        _init_exp   = _init_exps[0] if _init_exps else None
+                        _init_exp   = MODEL_TEXT if MODEL_TEXT in _init_exps else (_init_exps[0] if _init_exps else None)
                         _init_ckpts = _list_checkpoints(_init_exp) if _init_exp else []
                         _init_ckpt  = _init_ckpts[-1] if _init_ckpts else None
                         infer_exp_dd   = gr.Dropdown(label=L["lbl_infer_exp"],
@@ -841,9 +941,37 @@ def build_ui():
 
                 infer_exp_dd.change(fn=update_ckpt_list,
                                     inputs=[infer_exp_dd], outputs=[infer_ckpt_dd])
+
+                def _switch_to_image_model():
+                    exps   = _list_experiments()
+                    exp    = MODEL_IMAGE if MODEL_IMAGE in exps else None
+                    ckpts  = _list_checkpoints(exp) if exp else []
+                    ckpt   = ckpts[-1] if ckpts else None
+                    return (
+                        gr.Dropdown(choices=exps, value=exp),
+                        gr.Dropdown(choices=ckpts, value=ckpt),
+                        gr.Slider(value=2.0),   # recommended CFG for image-cond
+                    )
+
+                def _switch_to_text_model():
+                    exps   = _list_experiments()
+                    exp    = MODEL_TEXT if MODEL_TEXT in exps else None
+                    ckpts  = _list_checkpoints(exp) if exp else []
+                    ckpt   = ckpts[-1] if ckpts else None
+                    return (
+                        gr.Dropdown(choices=exps, value=exp),
+                        gr.Dropdown(choices=ckpts, value=ckpt),
+                        gr.Slider(value=7.5),   # recommended CFG for text-cond
+                    )
+
+                tab_image.select(fn=_switch_to_image_model,
+                                 outputs=[infer_exp_dd, infer_ckpt_dd, cfg_in])
+                tab_text.select(fn=_switch_to_text_model,
+                                outputs=[infer_exp_dd, infer_ckpt_dd, cfg_in])
+
                 gen_btn.click(
                     fn=run_inference,
-                    inputs=[prompt_in, image_in, cfg_in, seed_in, steps_inf,
+                    inputs=[prompt_in, image_in, cfg_in, seed_in, steps_inf, elevation_in, use_elevest_cb,
                             infer_exp_dd, infer_ckpt_dd, save_ply_cb, vid_type],
                     outputs=[output_img, output_vid, infer_status],
                 )
@@ -860,7 +988,7 @@ def build_ui():
             sec_filter, val_exp_dd, btn_refresh_exp, sec_metrics,
             psnr_m, lpips_m, ssim_m, val_gallery, tip_val,
             sec_input, prompt_in, neg_prompt, image_in,
-            sec_params, cfg_in, seed_in, steps_inf,
+            sec_params, cfg_in, seed_in, steps_inf, elevation_in, use_elevest_cb,
             sec_ckpt, infer_exp_dd, infer_ckpt_dd,
             sec_output_opt, save_ply_cb, vid_type, gen_btn,
             infer_status, sec_preview, output_img, output_vid, tip_infer,

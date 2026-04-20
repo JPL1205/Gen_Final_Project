@@ -59,10 +59,12 @@ conda activate diffsplat_sm120
 pip install torch==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128
 # Activate the environment
 conda activate diffsplat_sm120
+
 // Gradio
 conda activate diffsplat_sm120
 cd ~/Gen_Final_Project
 PYTHONPATH=. python app.py
+open http://localhost:5788/
 ```
 ==================================================
 Python version: 3.10.20
@@ -74,12 +76,25 @@ CUDA version: 12.8
 cuDNN version: 91900
 GPU count: 1
 Current GPU: NVIDIA GeForce RTX 5070 Laptop GPU
+
+sudo apt  install blender  # version 4.0.2+dfsg-1ubuntu1
 ==================================================
 
+generate dataset from obj
+Step 1 — render in Blender (run from WSL terminal):
 
+blender --background --python data/preparation/blender_transfer.py
+→ outputs data/chibi_renders/lina/, data/chibi_renders/Miyabi/ (40 PNG + 40 JSON each)
+
+Step 2 — pack to parquet:
+
+cd ~/Gen_Final_Project
+PYTHONPATH=. python data/preparation/pack_to_parquet.py
+→ outputs data/chibi_train/train.parquet, val.parquet, train.pkl, val.pkl, prompt_embeds_sd15/
+
+The train split gets all but the last object; val gets the last. With 2 OBJs: Miyabi → train, lina → val (alphabetically sorted).
 
 ## 📊 Dataset
-
 - We use [G-Objaverse](https://github.com/modelscope/richdreamer/tree/main/dataset/gobjaverse) with about 265K 3D objects and 10.6M rendered images (265K x 40 views, including RGB, normal and depth maps) for `GSRecon` and `GSVAE` training. [Its subset](https://github.com/ashawkey/objaverse_filter) with about 83K 3D objects provided by [LGM](https://me.kiui.moe/lgm) is used for `DiffSplat` training. Their text descriptions are provided by the latest version of [Cap3D](https://huggingface.co/datasets/tiange/Cap3D) (i.e., refined by [DiffuRank](https://arxiv.org/abs/2404.07984)).
 - We find the filtering is crucial for the generation quality of `DiffSplat`, and a larger dataset is beneficial for the performance of `GSRecon` and `GSVAE`.
 - We store the dataset in an internal HDFS cluster in this project. Thus, the training code can NOT be directly run on your local machine. Please implement your own dataloading logic referring to our provided dataset & dataloader code.
@@ -273,6 +288,8 @@ You will get:
 - `--controlnet_scale`: determines how much weight to assign to the conditioning inputs; outputs of the ControlNet are multiplied by `controlnet_scale` before they are added to the residual in the original UNet.
 
 Please refer to [infer_gsdiff_sd.py](./src/infer_gsdiff_sd.py) for more argument details.
+
+
 
 
 ### 🦾 Training
