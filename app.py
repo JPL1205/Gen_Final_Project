@@ -1,5 +1,5 @@
 """
-GS-Diff Lab — Gradio UI
+Gradio UI
 Launch:
     conda activate diffsplat_sm120
     cd ~/Gen_Final_Project
@@ -8,6 +8,7 @@ Launch:
 
 import os
 import re
+import sys
 import glob
 import threading
 import subprocess
@@ -201,10 +202,12 @@ S = _State()
 def _list_experiments() -> list:
     if not OUT_DIR.exists():
         return []
-    return sorted([
-        d.name for d in OUT_DIR.iterdir()
-        if d.is_dir() and (d / "checkpoints").exists()
-    ])
+    result = []
+    for d in OUT_DIR.iterdir():
+        ckpt_dir = d / "checkpoints"
+        if d.is_dir() and ckpt_dir.exists() and any(ckpt_dir.iterdir()):
+            result.append(d.name)
+    return sorted(result)
 
 
 def _list_checkpoints(tag: str) -> list:
@@ -212,6 +215,20 @@ def _list_checkpoints(tag: str) -> list:
     if not ckpt_dir.exists():
         return []
     return sorted([d.name for d in ckpt_dir.iterdir() if d.is_dir()])
+
+
+def _get_unet_in_channels(tag: str, ckpt_step: str) -> Optional[int]:
+    import json
+    config_path = OUT_DIR / tag / "checkpoints" / ckpt_step / "unet_ema" / "config.json"
+    if not config_path.exists():
+        config_path = OUT_DIR / tag / "checkpoints" / ckpt_step / "unet" / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        with open(config_path) as f:
+            return json.load(f).get("in_channels")
+    except Exception:
+        return None
 
 
 def _get_val_images(tag: str) -> list:
@@ -467,40 +484,51 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps,
     if not prompt and image is None:
         return None, None, "⚠️ Enter a prompt or upload an image."
 
-    image_arg = ""
+    in_ch = _get_unet_in_channels(exp_tag, ckpt_step)
+    if image is not None and in_ch is not None and in_ch < 11:
+        return None, None, (
+            f"⚠️ This checkpoint has {in_ch} input channels (text-only model).\n"
+            "Image conditioning requires an image-conditioned checkpoint (11ch).\n"
+            "Please use a text prompt only, or download the image-conditioned checkpoint "
+            "(e.g. gsdiff_gobj83k_sd15_image__render)."
+        )
+
+    image_tmp_path = None
     if image is not None:
         from PIL import Image as PILImage
         import tempfile
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp")
         PILImage.fromarray(image.astype("uint8")).save(tmp.name)
-        image_arg = f"--image_path {tmp.name}"
+        image_tmp_path = tmp.name
 
-    video_arg = f"--output_video_type {output_video_type}" if output_video_type != "none" else ""
-    ply_arg   = "--save_ply" if save_ply else ""
-
-    cmd_parts = [
-        "python src/infer_gsdiff_sd.py",
-        "--config_file configs/gsdiff_sd15.yaml",
-        f"--tag {exp_tag}",
-        f"--infer_from_iter {int(ckpt_step)}",
-        f"--output_dir {OUT_DIR}",
-        f"--guidance_scale {cfg_scale}",
-        f"--seed {int(seed)}",
-        f"--num_inference_steps {int(num_steps)}",
-        "--half_precision --allow_tf32",
-        f'--prompt "{prompt}"',
-        image_arg, video_arg, ply_arg,
+    cmd = [
+        sys.executable, "src/infer_gsdiff_sd.py",
+        "--config_file", "configs/gsdiff_sd15.yaml",
+        "--tag", exp_tag,
+        "--infer_from_iter", str(int(ckpt_step)),
+        "--output_dir", str(OUT_DIR),
+        "--guidance_scale", str(cfg_scale),
+        "--seed", str(int(seed)),
+        "--num_inference_steps", str(int(num_steps)),
+        "--half_precision", "--allow_tf32",
+        "--prompt", prompt,
     ]
-    full_cmd = (
-        f"source ~/miniconda3/etc/profile.d/conda.sh && "
-        f"conda activate {CONDA_ENV} && "
-        f"cd {PROJECT_ROOT} && "
-        f"PYTHONPATH=. {' '.join(p for p in cmd_parts if p)}"
-    )
+    if image_tmp_path:
+        cmd += ["--image_path", image_tmp_path]
+    if output_video_type != "none":
+        cmd += ["--output_video_type", output_video_type]
+    if save_ply:
+        cmd.append("--save_ply")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(PROJECT_ROOT)
+
     progress(0, desc="Starting inference...")
-    proc = subprocess.Popen(["bash", "-c", full_cmd],
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            cwd=str(PROJECT_ROOT))
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=str(PROJECT_ROOT), env=env,
+    )
     log_buf = []
     for raw in iter(proc.stdout.readline, b""):
         line = raw.decode("utf-8", errors="replace").rstrip()
@@ -513,9 +541,9 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps,
     if proc.returncode != 0:
         return None, None, "❌ Inference failed:\n" + "\n".join(log_buf[-20:])
 
-    infer_dir = OUT_DIR / exp_tag / "infer"
+    infer_dir = OUT_DIR / exp_tag / "inference"
     if not infer_dir.exists():
-        candidates = list((OUT_DIR / exp_tag).glob("infer*"))
+        candidates = sorted((OUT_DIR / exp_tag).glob("infer*"))
         infer_dir  = candidates[-1] if candidates else OUT_DIR / exp_tag
 
     png_files = sorted(glob.glob(str(infer_dir / "*.png")))
@@ -782,10 +810,17 @@ def build_ui():
                                               minimum=10, maximum=50, value=20, step=5)
                         gr.Markdown("---")
                         sec_ckpt       = gr.Markdown(L["sec_ckpt"])
+                        _init_exps  = _list_experiments()
+                        _init_exp   = _init_exps[0] if _init_exps else None
+                        _init_ckpts = _list_checkpoints(_init_exp) if _init_exp else []
+                        _init_ckpt  = _init_ckpts[-1] if _init_ckpts else None
                         infer_exp_dd   = gr.Dropdown(label=L["lbl_infer_exp"],
-                                                     choices=_list_experiments(),
+                                                     choices=_init_exps,
+                                                     value=_init_exp,
                                                      allow_custom_value=True)
-                        infer_ckpt_dd  = gr.Dropdown(label=L["lbl_infer_ckpt"], choices=[])
+                        infer_ckpt_dd  = gr.Dropdown(label=L["lbl_infer_ckpt"],
+                                                     choices=_init_ckpts,
+                                                     value=_init_ckpt)
                         gr.Markdown("---")
                         sec_output_opt = gr.Markdown(L["sec_output_opt"])
                         with gr.Row():
@@ -845,7 +880,7 @@ if __name__ == "__main__":
     demo = build_ui()
     demo.launch(
         server_name="0.0.0.0",
-        server_port=7860,
+        server_port=5788,
         share=False,
         show_error=True,
     )

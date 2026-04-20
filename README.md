@@ -37,28 +37,6 @@ DiffSplat is a generative framework to synthesize 3D Gaussian Splats from text p
 Feel free to contact me (chenguolin@stu.pku.edu.cn) or open an issue if you have any questions or suggestions.
 
 
-## 🔥 See Also
-
-You may also be interested in our other works:
-- [**[CVPR 2026] Diff4Splat**](https://github.com/paulpanwang/Diff4Splat): a generative model for 4D dynamic scenes from a single-view image.
-- [**[CVPR 2026] MoVieS**](https://github.com/chenguolin/MoVieS): a feed-forward model for 4D dynamic reconstruction from monocular videos.
-- [**[NeurIPS 2025] PartCrafter**](https://github.com/wgsxm/PartCrafter): a 3D-native DiT that can directly generate 3D objects in multiple parts.
-
-
-## 📢 News
-
-- **2025-03-06**: Training instructions for DiffSplat and ControlNet are provided.
-- **2025-02-11**: Training instructions for GSRecon and GSVAE are provided.
-- **2025-02-02**: Inference instructions (text-conditioned & image-conditioned & controlnet) are provided.
-- **2025-01-29**: The source code and pretrained models are released. Happy 🐍 Chinese New Year 🎆!
-- **2025-01-22**: DiffSplat is accepted to ICLR 2025.
-
-
-## 📋 TODO
-
-- [x] Provide detailed instructions for inference.
-- [x] Provide detailed instructions for GSRecon & GSVAE training.
-- [x] Provide detailed instructions for DiffSplat training.
 
 
 ## 🔧 Installation
@@ -66,10 +44,38 @@ You may also be interested in our other works:
 You may need to modify the specific version of `torch` in `settings/setup.sh` according to your CUDA version.
 There are not restrictions on the `torch` version, feel free to use your preferred one.
 ```bash
+（official)
 git clone https://github.com/chenguolin/DiffSplat.git
 cd DiffSplat
 bash settings/setup.sh
 ```
+### Env (in windows/ 5070)
+```bibtex
+# Create the conda environment
+conda create -n diffsplat_sm120 python=3.10.20
+# Activate the environment
+conda activate diffsplat_sm120
+# Install PyTorch with CUDA 12.8 support
+pip install torch==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128
+# Activate the environment
+conda activate diffsplat_sm120
+// Gradio
+conda activate diffsplat_sm120
+cd ~/Gen_Final_Project
+PYTHONPATH=. python app.py
+```
+==================================================
+Python version: 3.10.20
+OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+==================================================
+PyTorch version: 2.11.0+cu128
+CUDA available: True
+CUDA version: 12.8
+cuDNN version: 91900
+GPU count: 1
+Current GPU: NVIDIA GeForce RTX 5070 Laptop GPU
+==================================================
+
 
 
 ## 📊 Dataset
@@ -466,9 +472,6 @@ Please refer to [train_gsdiff_{sd, sdxl}_controlnet.py](./src/train_gsdiff_sd_co
 
 ## 😊 Acknowledgement
 We would like to thank the authors of [LGM](https://me.kiui.moe/lgm), [GRM](https://justimyhxu.github.io/projects/grm), and [Wonder3D](https://www.xxlong.site/Wonder3D) for their great work and generously providing source codes, which inspired our work and helped us a lot in the implementation.
-
-
-## 📚 Citation
 If you find our work helpful, please consider citing:
 ```bibtex
 @inproceedings{lin2025diffsplat,
@@ -478,3 +481,4 @@ If you find our work helpful, please consider citing:
   year={2025}
 }
 ```
+
