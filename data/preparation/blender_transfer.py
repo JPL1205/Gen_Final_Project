@@ -28,7 +28,8 @@ CAMERA_DISTANCE  = 2.2     # matches GObjaverse distance
 CYCLES_SAMPLES   = 64      # lower for faster test; raise to 128+ for quality
 
 # 40 views: 5 elevation rings × 8 azimuths
-ELEVATIONS = [10, 20, 30, 45, 60]          # degrees above XY plane (Blender Z-up)
+# Keep elevation low so camera stays near eye-level for standing characters
+ELEVATIONS = [-5, 5, 15, 25, 35]           # degrees above XY plane (Blender Z-up)
 AZIMUTHS   = [0, 45, 90, 135, 180, 225, 270, 315]
 
 
