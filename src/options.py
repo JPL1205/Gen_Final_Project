@@ -199,6 +199,13 @@ class Options:
                 self.file_name_train = "GObjaverse-train-280k"
             if self.file_name_test is None:
                 self.file_name_test = "GObjaverse-val"
+        elif self.dataset_name == "chibi":
+            if self.dataset_size is None:
+                self.dataset_size = 1
+            if self.file_name_train is None:
+                self.file_name_train = "train"
+            if self.file_name_test is None:
+                self.file_name_test = "val"
 
 
 def _update_opt(opt: Options, **kwargs) -> Options:
@@ -281,4 +288,13 @@ opt_dict["gsdiff_sd3m"] = Options(
 opt_dict["gsdiff_sd35m"] = Options(
     prompt_embed_dir="/tmp/GObjaverse_sd35m_prompt_embeds",
     pretrained_model_name_or_path="stabilityai/stable-diffusion-3.5-medium",
+)
+    ## SD15 fine-tuned on chibi
+opt_dict["gsdiff_sd15_chibi"] = Options(
+    dataset_name="chibi",
+    file_dir_train="data/chibi_train",
+    file_dir_test="data/chibi_train",
+    prompt_embed_dir="data/chibi_train/prompt_embeds_sd15",
+    pretrained_model_name_or_path="stable-diffusion-v1-5/stable-diffusion-v1-5",
+    load_even_views=False,
 )

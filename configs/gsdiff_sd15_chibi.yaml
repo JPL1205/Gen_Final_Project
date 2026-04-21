@@ -1,0 +1,32 @@
+opt_type: "gsdiff_sd15_chibi"
+
+optimizer:
+  name: "adamw"
+  lr: 0.00001  # smaller lr for fine-tuning
+  betas:
+    - 0.9
+    - 0.999
+  weight_decay: 0.01
+  eps: 1.e-8
+
+lr_scheduler:
+  name: "constant_warmup"
+  num_warmup_steps: 50
+
+train:
+  batch_size_per_gpu: 1
+  epochs: 500
+  log_freq: 1
+  early_eval_freq: 10
+  eval_freq: 100
+  save_freq: 200
+  eval_freq_epoch: 10
+  save_freq_epoch: 50
+  ema_kwargs:
+    decay: 0.9999
+    use_ema_warmup: true
+    inv_gamma: 1.
+    power: 0.75
+
+val:
+  batch_size_per_gpu: 1
