@@ -107,6 +107,22 @@ STRINGS = {
         "status_running":   "🟢 Training",
         "status_done_ok":   "✅ Finished",
         "status_done_err":  "❌ Failed",
+        # Tab 0 — Data Prep
+        "sec_data_prep":         "### 🗂️ Data Preparation Pipeline",
+        "lbl_obj_dir":           "OBJ Directory (input)",
+        "lbl_render_dir":        "Render Output Directory",
+        "lbl_out_dir_parquet":   "Parquet Output Directory",
+        "lbl_blender_exe":       "Blender Executable",
+        "btn_run_blender":       "▶  Run Blender Render",
+        "btn_pack_parquet":      "▶  Pack to Parquet",
+        "btn_stop_data":         "■  Stop",
+        "btn_refresh_data":      "🔄 Refresh",
+        "lbl_data_status":       "Status",
+        "sec_data_terminal":     "**📟 Terminal Output**",
+        "dp_status_idle":        "⚪ Idle",
+        "dp_status_running":     "🟢 Running",
+        "dp_status_done_ok":     "✅ Done",
+        "dp_status_done_err":    "❌ Failed",
     },
     "zh": {
         # Header
@@ -185,6 +201,22 @@ STRINGS = {
         "status_running":   "🟢 训练中",
         "status_done_ok":   "✅ 已完成",
         "status_done_err":  "❌ 已失败",
+        # Tab 0 — Data Prep
+        "sec_data_prep":         "### 🗂️ 数据准备流水线",
+        "lbl_obj_dir":           "OBJ 输入目录",
+        "lbl_render_dir":        "渲染输出目录",
+        "lbl_out_dir_parquet":   "Parquet 输出目录",
+        "lbl_blender_exe":       "Blender 可执行文件",
+        "btn_run_blender":       "▶  运行 Blender 渲染",
+        "btn_pack_parquet":      "▶  打包为 Parquet",
+        "btn_stop_data":         "■  停止",
+        "btn_refresh_data":      "🔄 刷新",
+        "lbl_data_status":       "状态",
+        "sec_data_terminal":     "**📟 终端输出**",
+        "dp_status_idle":        "⚪ 未运行",
+        "dp_status_running":     "🟢 运行中",
+        "dp_status_done_ok":     "✅ 已完成",
+        "dp_status_done_err":    "❌ 已失败",
     },
 }
 
@@ -200,6 +232,14 @@ class _State:
     lang: str = "en"
 
 S = _State()
+
+
+class _DataPrepState:
+    proc:      Optional[subprocess.Popen] = None
+    log_lines: list = []
+    lock: threading.Lock = threading.Lock()
+
+DS = _DataPrepState()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -300,6 +340,97 @@ def _ensure_wandb_token():
     token_path.parent.mkdir(exist_ok=True)
     if not token_path.exists():
         token_path.write_text("offline")
+
+
+# ══════════════════════════════════════════════════════════════
+#  Tab 0 — Data Preparation
+# ══════════════════════════════════════════════════════════════
+
+def _stream_data_prep(proc: subprocess.Popen):
+    for raw in iter(proc.stdout.readline, b""):
+        line = raw.decode("utf-8", errors="replace").rstrip()
+        with DS.lock:
+            DS.log_lines.append(line)
+            if len(DS.log_lines) > 600:
+                DS.log_lines = DS.log_lines[-600:]
+    proc.stdout.close()
+
+
+def _data_prep_busy() -> bool:
+    with DS.lock:
+        return DS.proc is not None and DS.proc.poll() is None
+
+
+def start_blender_render(obj_dir: str, render_dir: str, blender_exe: str):
+    if _data_prep_busy():
+        return "⚠️ A process is already running. Stop it first."
+    with DS.lock:
+        DS.log_lines.clear()
+    script = str(PROJECT_ROOT / "data" / "preparation" / "blender_transfer.py")
+    cmd = (
+        f"source ~/miniconda3/etc/profile.d/conda.sh && "
+        f"conda activate {CONDA_ENV} && "
+        f"cd {PROJECT_ROOT} && "
+        f"{blender_exe} --background --python {script} "
+        f"-- --obj_dir {obj_dir} --render_dir {render_dir}"
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", cmd],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=str(PROJECT_ROOT),
+    )
+    with DS.lock:
+        DS.proc = proc
+    threading.Thread(target=_stream_data_prep, args=(proc,), daemon=True).start()
+    return f"🟢 Blender render started  PID {proc.pid}"
+
+
+def start_pack_parquet(render_dir: str, out_dir_parquet: str):
+    if _data_prep_busy():
+        return "⚠️ A process is already running. Stop it first."
+    with DS.lock:
+        DS.log_lines.clear()
+    script = str(PROJECT_ROOT / "data" / "preparation" / "pack_to_parquet.py")
+    cmd = (
+        f"source ~/miniconda3/etc/profile.d/conda.sh && "
+        f"conda activate {CONDA_ENV} && "
+        f"cd {PROJECT_ROOT} && "
+        f"PYTHONPATH=. python {script} "
+        f"--render_dir {render_dir} --out_dir {out_dir_parquet}"
+    )
+    proc = subprocess.Popen(
+        ["bash", "-c", cmd],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=str(PROJECT_ROOT),
+    )
+    with DS.lock:
+        DS.proc = proc
+    threading.Thread(target=_stream_data_prep, args=(proc,), daemon=True).start()
+    return f"🟢 Pack-to-parquet started  PID {proc.pid}"
+
+
+def stop_data_prep():
+    with DS.lock:
+        if DS.proc is not None and DS.proc.poll() is None:
+            DS.proc.terminate()
+            return "🛑 Stop signal sent."
+    return "ℹ️ No process running."
+
+
+def get_data_prep_logs():
+    with DS.lock:
+        return "\n".join(DS.log_lines[-100:])
+
+
+def get_data_prep_status():
+    with DS.lock:
+        if DS.proc is None:
+            return STRINGS[S.lang]["dp_status_idle"]
+        if DS.proc.poll() is None:
+            return STRINGS[S.lang]["dp_status_running"]
+        rc  = DS.proc.returncode
+        key = "dp_status_done_ok" if rc == 0 else "dp_status_done_err"
+        return f"{STRINGS[S.lang][key]}  (returncode={rc})"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -664,6 +795,19 @@ def switch_lang(lang_label: str):
 
     return (
         gr.update(value=t["header_html"]),
+        # Tab 0 — Data Prep
+        gr.update(value=t["sec_data_prep"]),
+        gr.update(label=t["lbl_obj_dir"]),
+        gr.update(label=t["lbl_render_dir"]),
+        gr.update(label=t["lbl_out_dir_parquet"]),
+        gr.update(label=t["lbl_blender_exe"]),
+        gr.update(value=t["btn_run_blender"]),
+        gr.update(value=t["btn_pack_parquet"]),
+        gr.update(value=t["btn_stop_data"]),
+        gr.update(label=t["lbl_data_status"]),
+        gr.update(value=t["sec_data_terminal"]),
+        gr.update(value=t["btn_refresh_data"]),
+        # Tab 1 — Training
         gr.update(value=t["sec_config"]),
         gr.update(label=t["lbl_tag"]),
         gr.update(label=t["lbl_train_dir"]),
@@ -773,6 +917,74 @@ def build_ui():
                 )
 
         with gr.Tabs(elem_classes="tab-nav"):
+
+            # ══════════ TAB 0 ══════════
+            with gr.Tab("0 · Data Prep"):
+                with gr.Row(equal_height=False):
+
+                    # Left panel — path inputs + controls
+                    with gr.Column(scale=4, min_width=320):
+                        sec_data_prep = gr.Markdown(L["sec_data_prep"])
+                        dp_obj_dir = gr.Textbox(
+                            label=L["lbl_obj_dir"],
+                            value=str(DATA_DIR / "chibi_train_obj_data"),
+                        )
+                        dp_render_dir = gr.Textbox(
+                            label=L["lbl_render_dir"],
+                            value=str(DATA_DIR / "chibi_renders"),
+                        )
+                        dp_out_dir = gr.Textbox(
+                            label=L["lbl_out_dir_parquet"],
+                            value=str(DATA_DIR / "chibi_train"),
+                        )
+                        dp_blender_exe = gr.Textbox(
+                            label=L["lbl_blender_exe"],
+                            value="blender",
+                        )
+                        gr.Markdown("---")
+                        with gr.Row():
+                            dp_btn_blender  = gr.Button(L["btn_run_blender"],
+                                                        variant="primary",
+                                                        elem_classes="btn-orange", scale=2)
+                            dp_btn_parquet  = gr.Button(L["btn_pack_parquet"],
+                                                        variant="primary",
+                                                        elem_classes="btn-orange", scale=2)
+                            dp_btn_stop     = gr.Button(L["btn_stop_data"],
+                                                        elem_classes="btn-stop", scale=1)
+                        dp_status_bar = gr.Textbox(
+                            label=L["lbl_data_status"],
+                            value=L["dp_status_idle"],
+                            interactive=False, max_lines=1,
+                        )
+
+                    # Right panel — terminal
+                    with gr.Column(scale=8):
+                        with gr.Row():
+                            dp_sec_terminal = gr.Markdown(L["sec_data_terminal"])
+                            dp_btn_refresh  = gr.Button(L["btn_refresh_data"], size="sm", scale=0)
+                        dp_log_box = gr.Textbox(
+                            value="", lines=25, max_lines=25,
+                            interactive=False, show_label=False,
+                            elem_classes="terminal",
+                        )
+
+                dp_timer = gr.Timer(value=3)
+                dp_timer.tick(fn=get_data_prep_logs,   outputs=[dp_log_box])
+                dp_timer.tick(fn=get_data_prep_status, outputs=[dp_status_bar])
+
+                dp_btn_blender.click(
+                    fn=start_blender_render,
+                    inputs=[dp_obj_dir, dp_render_dir, dp_blender_exe],
+                    outputs=[dp_status_bar],
+                )
+                dp_btn_parquet.click(
+                    fn=start_pack_parquet,
+                    inputs=[dp_render_dir, dp_out_dir],
+                    outputs=[dp_status_bar],
+                )
+                dp_btn_stop.click(fn=stop_data_prep, outputs=[dp_status_bar])
+                dp_btn_refresh.click(fn=get_data_prep_logs,   outputs=[dp_log_box])
+                dp_btn_refresh.click(fn=get_data_prep_status, outputs=[dp_status_bar])
 
             # ══════════ TAB 1 ══════════
             with gr.Tab("1 · Training Monitor"):
@@ -979,6 +1191,11 @@ def build_ui():
         # ─── Language switch: wire ALL translatable components ───
         lang_outputs = [
             header_html,
+            # Tab 0
+            sec_data_prep, dp_obj_dir, dp_render_dir, dp_out_dir, dp_blender_exe,
+            dp_btn_blender, dp_btn_parquet, dp_btn_stop,
+            dp_status_bar, dp_sec_terminal, dp_btn_refresh,
+            # Tab 1
             sec_config, tag_in, train_dir, val_dir,
             ds_size, fname_tr, fname_vl, embed_dir,
             steps_in, lr_in, batch_in, accum_in, load_model_dd,

@@ -185,4 +185,16 @@ def main():
     print("Next step: python data/preparation/pack_to_parquet.py")
 
 
+if "--" in sys.argv:
+    import argparse
+    extra = sys.argv[sys.argv.index("--") + 1:]
+    _p = argparse.ArgumentParser()
+    _p.add_argument("--obj_dir")
+    _p.add_argument("--render_dir")
+    _a, _ = _p.parse_known_args(extra)
+    if _a.obj_dir:
+        OBJ_DIR = Path(_a.obj_dir)
+    if _a.render_dir:
+        RENDER_DIR = Path(_a.render_dir)
+
 main()

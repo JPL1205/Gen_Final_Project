@@ -138,4 +138,14 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+    _p = argparse.ArgumentParser()
+    _p.add_argument("--render_dir")
+    _p.add_argument("--out_dir")
+    _a, _ = _p.parse_known_args()
+    if _a.render_dir:
+        RENDER_DIR = Path(_a.render_dir)
+    if _a.out_dir:
+        OUT_DIR    = Path(_a.out_dir)
+        EMBED_DIR  = OUT_DIR / "prompt_embeds_sd15"
     main()
