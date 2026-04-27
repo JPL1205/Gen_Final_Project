@@ -653,6 +653,20 @@ def get_logs():
         return "\n".join(S.log_lines[-100:])
 
 
+def get_infer_logs(exp_tag: str):
+    if not exp_tag:
+        return ""
+    log_path = OUT_DIR / exp_tag / "log_infer.txt"
+    if not log_path.exists():
+        return ""
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return "".join(lines[-120:])
+    except Exception as e:
+        return f"Failed to read inference log: {e}"
+
+
 def get_charts(lang="en"):
     with S.lock:
         steps     = list(S.metrics["step"])
@@ -839,6 +853,28 @@ def _get_unet_in_channels(tag: str, ckpt_step, _visited=None) -> Optional[int]:
     return None
 
 
+def _resolve_inference_model_args(tag: str, ckpt_step):
+    params = _load_experiment_params(tag)
+    config_file = str(params.get("config_file") or "configs/gsdiff_sd15.yaml")
+    model_tag = tag
+    model_ckpt = int(ckpt_step)
+    extra_args = []
+
+    ckpt_root = OUT_DIR / tag / "checkpoints" / f"{int(ckpt_step):06d}"
+    if (ckpt_root / "unet_lora").exists():
+        base_tag = params.get("load_pretrained_model")
+        base_ckpt = params.get("load_pretrained_model_ckpt")
+        if base_tag and base_ckpt not in (None, "", "None"):
+            model_tag = str(base_tag)
+            model_ckpt = int(base_ckpt)
+            extra_args += [
+                "--load_lora_tag", tag,
+                "--load_lora_ckpt", str(int(ckpt_step)),
+            ]
+
+    return config_file, model_tag, model_ckpt, extra_args
+
+
 def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elevest,
                   exp_tag, ckpt_step, save_ply, output_video_type,
                   progress=gr.Progress()):
@@ -873,11 +909,13 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elev
         PILImage.fromarray(image.astype("uint8")).save(tmp.name)
         image_tmp_path = tmp.name
 
+    infer_config, infer_tag, infer_ckpt, extra_model_args = _resolve_inference_model_args(exp_tag, ckpt_step)
+
     cmd = [
         sys.executable, "src/infer_gsdiff_sd.py",
-        "--config_file", "configs/gsdiff_sd15.yaml",
-        "--tag", exp_tag,
-        "--infer_from_iter", str(int(ckpt_step)),
+        "--config_file", infer_config,
+        "--tag", infer_tag,
+        "--infer_from_iter", str(int(infer_ckpt)),
         "--output_dir", str(OUT_DIR),
         "--guidance_scale", str(cfg_scale),
         "--seed", str(int(seed)),
@@ -885,6 +923,7 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elev
         "--half_precision", "--allow_tf32",
         "--prompt", prompt,
     ]
+    cmd += extra_model_args
     if image_tmp_path:
         cmd += ["--image_path", image_tmp_path]
         if use_elevest:
@@ -1033,6 +1072,8 @@ def switch_lang(lang_label: str):
         gr.update(value=t["sec_preview"]),
         gr.update(label=t["lbl_out_img"]),
         gr.update(label=t["lbl_out_vid"]),
+        gr.update(value=t["sec_terminal"]),
+        gr.update(value=t["btn_refresh"]),
         gr.update(value=t["tip_infer"]),
     )
 
@@ -1347,6 +1388,14 @@ def build_ui():
                         sec_preview = gr.Markdown(L["sec_preview"])
                         output_img  = gr.Image(label=L["lbl_out_img"], height=280)
                         output_vid  = gr.Video(label=L["lbl_out_vid"], height=280)
+                        with gr.Row():
+                            infer_terminal = gr.Markdown(L["sec_terminal"])
+                            infer_refresh_btn = gr.Button(L["btn_refresh"], size="sm", scale=0)
+                        infer_log_box = gr.Textbox(
+                            value="", lines=12, max_lines=12,
+                            interactive=False, show_label=False,
+                            elem_classes="terminal",
+                        )
                         tip_infer   = gr.Markdown(L["tip_infer"])
 
                 infer_exp_dd.change(fn=update_ckpt_list,
@@ -1385,6 +1434,8 @@ def build_ui():
                             infer_exp_dd, infer_ckpt_dd, save_ply_cb, vid_type],
                     outputs=[output_img, output_vid, infer_status],
                 )
+                infer_refresh_btn.click(fn=get_infer_logs, inputs=[infer_exp_dd], outputs=[infer_log_box])
+                infer_exp_dd.change(fn=get_infer_logs, inputs=[infer_exp_dd], outputs=[infer_log_box])
 
         # ─── Language switch: wire ALL translatable components ───
         lang_outputs = [
@@ -1406,7 +1457,7 @@ def build_ui():
             sec_params, cfg_in, seed_in, steps_inf, elevation_in, use_elevest_cb,
             sec_ckpt, infer_exp_dd, infer_ckpt_dd,
             sec_output_opt, save_ply_cb, vid_type, gen_btn,
-            infer_status, sec_preview, output_img, output_vid, tip_infer,
+            infer_status, sec_preview, output_img, output_vid, infer_terminal, infer_refresh_btn, tip_infer,
         ]
 
         lang_radio.change(
