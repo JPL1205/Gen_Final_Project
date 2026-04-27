@@ -275,16 +275,62 @@ def render_object(obj_path: Path):
     print(f"Done: {view_idx} views → {out_dir}")
 
 
+def _find_model_in_dir(d: Path):
+    """Return the first supported model file in directory d, or None.
+
+    Priority: .blend > .fbx > .3ds > .obj (blend preserves most material data).
+    Warns and returns None if only .max files are present.
+    """
+    for ext in (".blend", ".fbx", ".3ds", ".obj"):
+        candidates = sorted(d.glob(f"*{ext}"))
+        if candidates:
+            return candidates[0]
+    if list(d.glob("*.max")):
+        print(
+            f"[SKIP] {d.name}: .max is 3ds Max's proprietary format and cannot be "
+            f"imported by Blender. Open the file in 3ds Max and export as .fbx or "
+            f".obj, then place it in this folder.",
+            file=sys.stderr,
+        )
+    return None
+
+
 def main():
-    obj_files = (sorted(OBJ_DIR.glob("*.obj")) + sorted(OBJ_DIR.glob("*.blend"))
-                 + sorted(OBJ_DIR.glob("*.3ds")) + sorted(OBJ_DIR.glob("*.fbx")))
-    obj_files = sorted(set(obj_files))          # dedup, consistent order
+    RENDER_DIR.mkdir(parents=True, exist_ok=True)
+
+    seen_names: set = set()
+    obj_files = []
+
+    # ── Per-character subdirectories (preferred) ──────────────────────────────
+    # Expected layout:  chibi_train_obj_data/CharName/model.blend  + textures
+    for char_dir in sorted(d for d in OBJ_DIR.iterdir() if d.is_dir()):
+        model = _find_model_in_dir(char_dir)
+        if model:
+            obj_files.append(model)
+            seen_names.add(char_dir.name)
+
+    # ── Flat files directly in OBJ_DIR (backward compat) ─────────────────────
+    for ext in (".blend", ".fbx", ".3ds", ".obj"):
+        for f in sorted(OBJ_DIR.glob(f"*{ext}")):
+            if f.stem not in seen_names:
+                obj_files.append(f)
+                seen_names.add(f.stem)
+    # Warn about flat .max files
+    for f in sorted(OBJ_DIR.glob("*.max")):
+        if f.stem not in seen_names:
+            print(
+                f"[SKIP] {f.name}: .max is 3ds Max's proprietary format and cannot be "
+                f"imported by Blender. Export as .fbx or .obj from 3ds Max first.",
+                file=sys.stderr,
+            )
+
     if not obj_files:
-        print(f"No .obj / .blend / .3ds / .fbx files found in {OBJ_DIR}", file=sys.stderr)
+        print(f"No supported model files found in {OBJ_DIR}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Found {len(obj_files)} file(s): {[f.name for f in obj_files]}")
-    RENDER_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Found {len(obj_files)} model(s):")
+    for f in obj_files:
+        print(f"  {f}")
 
     for obj_path in obj_files:
         render_object(obj_path)

@@ -80,19 +80,47 @@ Current GPU: NVIDIA GeForce RTX 5070 Laptop GPU
 sudo apt  install blender  # version 4.0.2+dfsg-1ubuntu1
 ==================================================
 
-generate dataset from obj
-Step 1 — render in Blender (run from WSL terminal):
+## 🧸 Chibi Character Fine-tuning
 
+### Data
+
+Download `chibi_train_obj_data` from Google Drive and place it at `data/chibi_train_obj_data/`:
+
+> [https://drive.google.com/drive/folders/1aOb_4Koy8H3qPK2EAGif4jY-NFtZ7YCQ?usp=sharing](https://drive.google.com/drive/folders/1aOb_4Koy8H3qPK2EAGif4jY-NFtZ7YCQ?usp=sharing)
+
+Each character lives in its own subfolder with its model file and textures:
+```
+data/chibi_train_obj_data/
+  Lycaon/
+    Lycaon.blend
+    Lycaon_Body_Map1_D.png
+    ...
+  艾莲·乔/
+    ailianqiao.blend
+    ...
+```
+
+Supported formats: `.blend`, `.fbx`, `.3ds`, `.obj`.
+> Note: `.max` (3ds Max proprietary) cannot be imported by Blender — export to `.fbx` or `.obj` from 3ds Max first.
+
+### Generate Training Data
+
+**Step 1 — render in Blender** (run from WSL terminal):
+```bash
 blender --background --python data/preparation/blender_transfer.py
-→ outputs data/chibi_renders/lina/, data/chibi_renders/Miyabi/ (40 PNG + 40 JSON each)
+```
+→ outputs `data/chibi_renders/{CharName}/` (40 PNG + 40 JSON camera files each)
 
-Step 2 — pack to parquet:
-
+**Step 2 — pack to parquet:**
+```bash
 cd ~/Gen_Final_Project
 PYTHONPATH=. python data/preparation/pack_to_parquet.py
-→ outputs data/chibi_train/train.parquet, val.parquet, train.pkl, val.pkl, prompt_embeds_sd15/
+```
+→ outputs `data/chibi_train/train.parquet`, `val.parquet`, `train.pkl`, `val.pkl`, `prompt_embeds_sd15/`
 
-The train split gets all but the last object; val gets the last. With 2 OBJs: Miyabi → train, lina → val (alphabetically sorted).
+The train split gets all but the last character; val gets the last (alphabetically sorted).
+
+### Fine-tune
 
 START FINETUNING
 PYTHONPATH=. python src/train_gsdiff_sd.py \

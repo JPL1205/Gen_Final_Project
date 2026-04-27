@@ -11,3 +11,10 @@ temp*.*
 *.vsix
 .venv/
 wandb/
+
+# 3D source assets and rendered training data — store on shared drive, not git
+data/chibi_train_obj_data/*
+data/chibi_renders/*
+# Keep the empty folder placeholders
+!data/chibi_train_obj_data/.gitkeep
+!data/chibi_renders/.gitkeep
