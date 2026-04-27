@@ -10,7 +10,7 @@ optimizer:
   eps: 1.e-8
 
 lr_scheduler:
-  name: "constant_warmup"
+  name: "cosine_warmup"
   num_warmup_steps: 50
 
 train:
@@ -23,11 +23,15 @@ train:
   eval_freq_epoch: 10
   save_freq_epoch: 50
   ema_kwargs:
-    decay: 0.9999
+    decay: 0.999
     use_ema_warmup: true
     inv_gamma: 1.
     power: 0.75
   early_eval: 50
+
+opt:
+  rendering_loss_prob: 0.5
+  snr_gamma: 5.0
 
 val:
   batch_size_per_gpu: 1
