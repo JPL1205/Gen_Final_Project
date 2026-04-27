@@ -11,6 +11,10 @@ Output:  data/chibi_train/
             val.parquet,   val.pkl
             prompt_embeds_sd15/null.npy
             prompt_embeds_sd15/{uid}.npy
+
+By default, each sample must contain at least 4 valid view pairs
+(`{view:05d}.png` + `{view:05d}.json`) so training does not fail when it
+tries to sample the required input views.
 """
 
 import json
@@ -30,6 +34,7 @@ OUT_DIR      = PROJECT_ROOT / "data" / "chibi_train"
 EMBED_DIR    = OUT_DIR / "prompt_embeds_sd15"
 
 NUM_VIEWS = 40
+MIN_REQUIRED_VIEWS = 4
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -38,6 +43,31 @@ def png_to_bytes(png_path: Path) -> bytes:
     """Read PNG and re-encode to ensure standard format."""
     with open(png_path, "rb") as f:
         return f.read()
+
+
+def find_valid_view_indices(obj_dir: Path) -> list[int]:
+    """Return view indices that have both render and camera files."""
+    valid_indices = []
+    for i in range(NUM_VIEWS):
+        png_path = obj_dir / f"{i:05d}.png"
+        json_path = obj_dir / f"{i:05d}.json"
+        if png_path.exists() and json_path.exists():
+            valid_indices.append(i)
+    return valid_indices
+
+
+def validate_sample_views(obj_dir: Path, min_required_views: int) -> list[int]:
+    """Fail early if a sample does not have enough valid views for training."""
+    valid_indices = find_valid_view_indices(obj_dir)
+    if len(valid_indices) < min_required_views:
+        missing_indices = [i for i in range(NUM_VIEWS) if i not in set(valid_indices)]
+        raise ValueError(
+            f"Sample '{obj_dir.name}' has only {len(valid_indices)} valid views, "
+            f"but at least {min_required_views} are required. "
+            f"Valid views: {[f'{i:05d}' for i in valid_indices]}; "
+            f"missing/incomplete views: {[f'{i:05d}' for i in missing_indices]}"
+        )
+    return valid_indices
 
 
 def build_row(obj_dir: Path, uid: str, caption: str) -> dict:
@@ -93,6 +123,16 @@ def main():
         sys.exit(1)
 
     print(f"Found {len(obj_dirs)} object(s): {[d.name for d in obj_dirs]}")
+    print(f"Validating that each sample has at least {MIN_REQUIRED_VIEWS} view(s)...")
+    validated_view_counts = {}
+    for obj_dir in obj_dirs:
+        valid_indices = validate_sample_views(obj_dir, MIN_REQUIRED_VIEWS)
+        validated_view_counts[obj_dir.name] = len(valid_indices)
+        print(
+            f"  [ok] {obj_dir.name}: {len(valid_indices)} valid view(s) "
+            f"({', '.join(f'{i:05d}' for i in valid_indices)})"
+        )
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     EMBED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -114,7 +154,10 @@ def main():
             stem    = obj_dir.name
             uid     = f"chibi_{split_name}_{i:03d}"
             caption = generate_caption(stem)
-            print(f"  [{split_name}] {uid}  caption='{caption}'  source={stem}")
+            print(
+                f"  [{split_name}] {uid}  caption='{caption}'  "
+                f"source={stem}  valid_views={validated_view_counts[stem]}"
+            )
 
             row = build_row(obj_dir, uid, caption)
             rows.append(row)
@@ -142,10 +185,14 @@ if __name__ == "__main__":
     _p = argparse.ArgumentParser()
     _p.add_argument("--render_dir")
     _p.add_argument("--out_dir")
+    _p.add_argument("--min_required_views", type=int, default=MIN_REQUIRED_VIEWS)
     _a, _ = _p.parse_known_args()
     if _a.render_dir:
         RENDER_DIR = Path(_a.render_dir)
     if _a.out_dir:
         OUT_DIR    = Path(_a.out_dir)
         EMBED_DIR  = OUT_DIR / "prompt_embeds_sd15"
+    if _a.min_required_views <= 0:
+        raise ValueError("--min_required_views must be a positive integer")
+    MIN_REQUIRED_VIEWS = _a.min_required_views
     main()
