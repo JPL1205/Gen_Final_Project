@@ -27,6 +27,12 @@ DATA_DIR       = PROJECT_ROOT / "data"
 CONDA_ENV      = "diffsplat_sm120"
 MODEL_TEXT     = "gsdiff_gobj83k_sd15__render"
 MODEL_IMAGE    = "gsdiff_gobj83k_sd15_image__render"
+CHIBI_PHASE2_CONFIGS = {
+    "text": "configs/gsdiff_sd15_chibi_text.yaml",
+    "image": "configs/gsdiff_sd15_chibi_image.yaml",
+}
+DEFAULT_CHIBI_VARIANT = "image"
+DEFAULT_CHIBI_CONFIG = CHIBI_PHASE2_CONFIGS[DEFAULT_CHIBI_VARIANT]
 
 # ─────────────────────────── i18n strings ───────────────────────────
 STRINGS = {
@@ -55,6 +61,7 @@ STRINGS = {
         "lbl_lr":           "Learning Rate",
         "lbl_batch":        "Batch / GPU",
         "lbl_accum":        "Grad Accum",
+        "lbl_train_variant":"Training Type",
         "lbl_load_model":   "Load Pretrained UNet (empty = from backbone)",
         "lbl_lora_acc":     "LoRA Settings",
         "lbl_use_lora":     "Enable LoRA Finetuning",
@@ -150,6 +157,7 @@ STRINGS = {
         "lbl_lr":           "学习率 (LR)",
         "lbl_batch":        "每卡批量 (Batch)",
         "lbl_accum":        "梯度累积 (Grad Accum)",
+        "lbl_train_variant":"训练类型",
         "lbl_load_model":   "加载预训练 UNet（空 = 从 backbone 初始化）",
         "lbl_lora_acc":     "LoRA 设置",
         "lbl_use_lora":     "启用 LoRA 微调",
@@ -252,7 +260,24 @@ def _list_configs() -> list:
     cfg_dir = PROJECT_ROOT / "configs"
     if not cfg_dir.exists():
         return []
-    return sorted(str(p.relative_to(PROJECT_ROOT)) for p in cfg_dir.glob("*.yaml"))
+    return sorted(
+        str(p.relative_to(PROJECT_ROOT))
+        for p in cfg_dir.iterdir()
+        if p.is_file() and p.name.endswith(".yaml") and ":Zone.Identifier" not in p.name
+    )
+
+
+def _infer_training_variant(config_file: str) -> str:
+    stem = Path(config_file).stem.lower()
+    if stem.endswith("_image"):
+        return "image"
+    if stem.endswith("_text"):
+        return "text"
+    return "image" if "image" in stem else "text"
+
+
+def _resolve_training_config(variant: str) -> str:
+    return CHIBI_PHASE2_CONFIGS.get(variant, DEFAULT_CHIBI_CONFIG)
 
 
 def _list_experiments() -> list:
@@ -461,13 +486,14 @@ def auto_fill_from_config(config_file: str):
     lr = "1e-4"
     batch = 1
     accum = 1
+    load_model = MODEL_TEXT
 
     if not config_file:
-        return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum
+        return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum, load_model
 
     cfg_path = PROJECT_ROOT / config_file.strip()
     if not cfg_path.exists():
-        return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum
+        return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum, load_model
 
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
@@ -481,6 +507,13 @@ def auto_fill_from_config(config_file: str):
             tr = cfg["train"]
             if "batch_size_per_gpu" in tr:
                 batch = int(tr["batch_size_per_gpu"])
+        ui_cfg = cfg.get("ui", {}) or {}
+        if ui_cfg.get("load_pretrained_model"):
+            load_model = str(ui_cfg["load_pretrained_model"])
+        else:
+            opt_cfg = cfg.get("opt", {}) or {}
+            if opt_cfg.get("view_concat_condition") or opt_cfg.get("input_concat_binary_mask"):
+                load_model = MODEL_IMAGE
 
         opt_type = cfg.get("opt_type", "")
         if opt_type:
@@ -510,7 +543,16 @@ def auto_fill_from_config(config_file: str):
     except Exception:
         pass
 
-    return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum
+    return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum, load_model
+
+
+def apply_training_config(config_file: str):
+    return (_infer_training_variant(config_file), *auto_fill_from_config(config_file))
+
+
+def apply_training_variant(variant: str):
+    config_file = _resolve_training_config(variant)
+    return (config_file, *auto_fill_from_config(config_file))
 
 
 def start_training(tag, config_file, train_dir, val_dir, dataset_size,
@@ -746,6 +788,57 @@ def _pick_output_pair(infer_dir: Path, start_time: float):
     return out_image, out_video
 
 
+def _load_experiment_params(tag: str) -> dict:
+    import yaml
+
+    params_path = OUT_DIR / tag / "params.yaml"
+    if not params_path.exists():
+        return {}
+    try:
+        with open(params_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _get_unet_in_channels(tag: str, ckpt_step, _visited=None) -> Optional[int]:
+    import json
+
+    if _visited is None:
+        _visited = set()
+
+    try:
+        ckpt_int = int(ckpt_step)
+    except Exception:
+        return None
+
+    visit_key = (tag, ckpt_int)
+    if visit_key in _visited:
+        return None
+    _visited.add(visit_key)
+
+    ckpt_root = OUT_DIR / tag / "checkpoints" / f"{ckpt_int:06d}"
+    for subfolder in ("unet_ema", "unet"):
+        config_path = ckpt_root / subfolder / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return json.load(f).get("in_channels")
+            except Exception:
+                return None
+
+    # LoRA checkpoints only save adapter weights, so resolve the base
+    # checkpoint recorded in params.yaml and inspect that UNet config instead.
+    if (ckpt_root / "unet_lora").exists():
+        params = _load_experiment_params(tag)
+        base_tag = params.get("load_pretrained_model")
+        base_ckpt = params.get("load_pretrained_model_ckpt")
+        if base_tag and base_ckpt not in (None, "", "None"):
+            return _get_unet_in_channels(str(base_tag), base_ckpt, _visited)
+
+    return None
+
+
 def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elevest,
                   exp_tag, ckpt_step, save_ply, output_video_type,
                   progress=gr.Progress()):
@@ -898,6 +991,7 @@ def switch_lang(lang_label: str):
         gr.update(label=t["lbl_lr"]),
         gr.update(label=t["lbl_batch"]),
         gr.update(label=t["lbl_accum"]),
+        gr.update(label=t["lbl_train_variant"]),
         gr.update(label=t["lbl_load_model"]),
         gr.update(label=t["lbl_lora_acc"]),
         gr.update(label=t["lbl_use_lora"]),
@@ -1071,13 +1165,18 @@ def build_ui():
                     # Left panel
                     with gr.Column(scale=4, min_width=320):
                         sec_config   = gr.Markdown(L["sec_config"])
+                        train_variant = gr.Radio(
+                            label=L["lbl_train_variant"],
+                            choices=["text", "image"],
+                            value=DEFAULT_CHIBI_VARIANT,
+                        )
                         config_dd = gr.Dropdown(
                             label=L["lbl_config_file"],
                             choices=_list_configs(),
-                            value="configs/gsdiff_sd15_chibi.yaml",
+                            value=DEFAULT_CHIBI_CONFIG,
                             allow_custom_value=True,
                         )
-                        tag_in       = gr.Textbox(label=L["lbl_tag"], value="gsdiff_sd15_chibi_run")
+                        tag_in       = gr.Textbox(label=L["lbl_tag"], value=Path(DEFAULT_CHIBI_CONFIG).stem + "_run")
                         train_dir    = gr.Textbox(label=L["lbl_train_dir"],
                                                   value=str(DATA_DIR / "chibi_train"))
                         val_dir      = gr.Textbox(label=L["lbl_val_dir"],
@@ -1099,7 +1198,7 @@ def build_ui():
                         load_model_dd = gr.Dropdown(
                             label=L["lbl_load_model"],
                             choices=[""] + _list_experiments(),
-                            value="gsdiff_gobj83k_sd15__render",
+                            value=MODEL_IMAGE,
                             allow_custom_value=True,
                         )
                         with gr.Accordion(L["lbl_lora_acc"], open=True) as lora_acc:
@@ -1143,11 +1242,18 @@ def build_ui():
                 )
 
                 config_dd.change(
-                    fn=auto_fill_from_config,
+                    fn=apply_training_config,
                     inputs=[config_dd],
-                    outputs=[tag_in, train_dir, val_dir, ds_size,
+                    outputs=[train_variant, tag_in, train_dir, val_dir, ds_size,
                              fname_tr, fname_vl, embed_dir, steps_in, lr_in,
-                             batch_in, accum_in],
+                             batch_in, accum_in, load_model_dd],
+                )
+                train_variant.change(
+                    fn=apply_training_variant,
+                    inputs=[train_variant],
+                    outputs=[config_dd, tag_in, train_dir, val_dir, ds_size,
+                             fname_tr, fname_vl, embed_dir, steps_in, lr_in,
+                             batch_in, accum_in, load_model_dd],
                 )
                 stop_btn.click(fn=stop_training, outputs=[status_bar])
                 refresh_btn.click(fn=get_logs,        outputs=[log_box])
@@ -1288,7 +1394,7 @@ def build_ui():
             dp_btn_blender, dp_btn_parquet, dp_btn_stop,
             dp_status_bar, dp_sec_terminal, dp_btn_refresh,
             # Tab 1
-            sec_config, config_dd, tag_in, train_dir, val_dir,
+            sec_config, train_variant, config_dd, tag_in, train_dir, val_dir,
             ds_size, fname_tr, fname_vl, embed_dir,
             steps_in, lr_in, batch_in, accum_in, load_model_dd,
             lora_acc, use_lora, lora_r, lora_a,
