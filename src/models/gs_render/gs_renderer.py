@@ -112,10 +112,9 @@ class GaussianRenderer:
             bg_color = torch.tensor(list(bg_color), dtype=torch.float32, device=device)
         bg_color = repeat(bg_color, "c -> b v c h w", b=B, v=V, h=H, w=W)
 
-        coords = (unproject_depth(depths.squeeze(2), C2W, fxfycxcy)
-            * 0.5 + 0.5) * alphas + (1. - alphas) * bg_color
-        normals_ = (torch.einsum("bvrc,bvchw->bvrhw", C2W[:, :, :3, :3], normals)
-            * 0.5 + 0.5) * alphas + (1. - alphas) * bg_color
+        coords = (unproject_depth(depths.squeeze(2), C2W, fxfycxcy) * 0.5 + 0.5) * alphas + (1. - alphas) * bg_color
+        normals = normals.to(dtype=C2W.dtype)
+        normals_ = (torch.einsum("bvrc,bvchw->bvrhw", C2W[:, :, :3, :3], normals) * 0.5 + 0.5) * alphas + (1. - alphas) * bg_color
 
         return {
             "image": images,
