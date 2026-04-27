@@ -43,6 +43,7 @@ STRINGS = {
         </div>""",
         # Tab 1
         "sec_config":       "### ⚙️ Setup",
+        "lbl_config_file":  "Config File",
         "lbl_tag":          "Experiment Tag",
         "lbl_train_dir":    "Training Data Dir",
         "lbl_val_dir":      "Validation Data Dir",
@@ -137,6 +138,7 @@ STRINGS = {
         </div>""",
         # Tab 1
         "sec_config":       "### ⚙️ 配置",
+        "lbl_config_file":  "配置文件",
         "lbl_tag":          "实验名称 (Tag)",
         "lbl_train_dir":    "训练数据目录",
         "lbl_val_dir":      "验证数据目录",
@@ -245,6 +247,13 @@ DS = _DataPrepState()
 # ══════════════════════════════════════════════════════════════
 #  Utilities
 # ══════════════════════════════════════════════════════════════
+
+def _list_configs() -> list:
+    cfg_dir = PROJECT_ROOT / "configs"
+    if not cfg_dir.exists():
+        return []
+    return sorted(str(p.relative_to(PROJECT_ROOT)) for p in cfg_dir.glob("*.yaml"))
+
 
 def _list_experiments() -> list:
     if not OUT_DIR.exists():
@@ -437,7 +446,74 @@ def get_data_prep_status():
 #  Tab 1 — Training
 # ══════════════════════════════════════════════════════════════
 
-def start_training(tag, train_dir, val_dir, dataset_size,
+def auto_fill_from_config(config_file: str):
+    """Read a config yaml and return sensible UI defaults for all training fields."""
+    import yaml
+
+    tag = "my_finetune"
+    train_dir = str(DATA_DIR / "min_img23d_test")
+    val_dir = str(DATA_DIR / "min_img23d_test")
+    ds_size = 1
+    fname_tr = "train"
+    fname_vl = "val"
+    embed_dir = ""
+    steps = 5000
+    lr = "1e-4"
+    batch = 1
+    accum = 1
+
+    if not config_file:
+        return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum
+
+    cfg_path = PROJECT_ROOT / config_file.strip()
+    if not cfg_path.exists():
+        return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum
+
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+
+        tag = Path(config_file).stem + "_run"
+
+        if "optimizer" in cfg and "lr" in cfg["optimizer"]:
+            lr = str(cfg["optimizer"]["lr"])
+        if "train" in cfg:
+            tr = cfg["train"]
+            if "batch_size_per_gpu" in tr:
+                batch = int(tr["batch_size_per_gpu"])
+
+        opt_type = cfg.get("opt_type", "")
+        if opt_type:
+            try:
+                from src.options import opt_dict
+                if opt_type in opt_dict:
+                    opt = opt_dict[opt_type]
+                    if opt.file_dir_train:
+                        train_dir = opt.file_dir_train
+                    if opt.file_dir_test:
+                        val_dir = opt.file_dir_test
+                    if opt.file_name_train:
+                        fname_tr = opt.file_name_train
+                    if opt.file_name_test:
+                        fname_vl = opt.file_name_test
+                    if opt.prompt_embed_dir:
+                        embed_dir = opt.prompt_embed_dir
+                    if opt.dataset_size:
+                        ds_size = opt.dataset_size
+            except Exception:
+                pass
+
+        if "train" in cfg and "epochs" in cfg["train"]:
+            epochs = int(cfg["train"]["epochs"])
+            steps = min(50000, max(epochs, epochs * ds_size // max(1, batch)))
+
+    except Exception:
+        pass
+
+    return tag, train_dir, val_dir, ds_size, fname_tr, fname_vl, embed_dir, steps, lr, batch, accum
+
+
+def start_training(tag, config_file, train_dir, val_dir, dataset_size,
                    fname_train, fname_val, embed_dir,
                    steps, lr, batch_size, grad_accum,
                    use_lora, lora_r, lora_alpha, load_model):
@@ -452,17 +528,16 @@ def start_training(tag, train_dir, val_dir, dataset_size,
 
     _ensure_wandb_token()
 
+    cfg = config_file.strip() if config_file and config_file.strip() else "configs/gsdiff_sd15.yaml"
     env_vars = (
         f"PYTHONPATH=. "
-        f"DIFFSPLAT_DATA_DIR={train_dir} "
-        f"DIFFSPLAT_VAL_DIR={val_dir} "
         f"HF_HOME=~/.cache/huggingface "
         f"TORCH_HOME=~/.cache/torch "
     )
     cmd_parts = [
         "accelerate launch --num_processes 1",
         "src/train_gsdiff_sd.py",
-        "--config_file configs/gsdiff_sd15.yaml",
+        f"--config_file {cfg}",
         f"--tag {tag}",
         f"--max_train_steps {int(steps)}",
         "--num_workers 4 --allow_tf32 --offline_wandb",
@@ -475,6 +550,8 @@ def start_training(tag, train_dir, val_dir, dataset_size,
         f"optimizer.lr={lr}",
         f"train.batch_size_per_gpu={int(batch_size)}",
         f"opt.dataset_size={int(dataset_size)}",
+        f"opt.file_dir_train={train_dir}",
+        f"opt.file_dir_test={val_dir}",
         f"opt.file_name_train={fname_train}",
         f"opt.file_name_test={fname_val}",
         "opt.load_normal=false",
@@ -809,6 +886,7 @@ def switch_lang(lang_label: str):
         gr.update(value=t["btn_refresh_data"]),
         # Tab 1 — Training
         gr.update(value=t["sec_config"]),
+        gr.update(label=t["lbl_config_file"]),
         gr.update(label=t["lbl_tag"]),
         gr.update(label=t["lbl_train_dir"]),
         gr.update(label=t["lbl_val_dir"]),
@@ -993,22 +1071,28 @@ def build_ui():
                     # Left panel
                     with gr.Column(scale=4, min_width=320):
                         sec_config   = gr.Markdown(L["sec_config"])
-                        tag_in       = gr.Textbox(label=L["lbl_tag"], value="my_finetune")
+                        config_dd = gr.Dropdown(
+                            label=L["lbl_config_file"],
+                            choices=_list_configs(),
+                            value="configs/gsdiff_sd15_chibi.yaml",
+                            allow_custom_value=True,
+                        )
+                        tag_in       = gr.Textbox(label=L["lbl_tag"], value="gsdiff_sd15_chibi_run")
                         train_dir    = gr.Textbox(label=L["lbl_train_dir"],
-                                                  value=str(DATA_DIR / "min_img23d_test"))
+                                                  value=str(DATA_DIR / "chibi_train"))
                         val_dir      = gr.Textbox(label=L["lbl_val_dir"],
-                                                  value=str(DATA_DIR / "min_img23d_test"))
+                                                  value=str(DATA_DIR / "chibi_train"))
                         with gr.Row():
                             ds_size  = gr.Number(label=L["lbl_ds_size"],  value=1,   precision=0, min_width=90)
                             fname_tr = gr.Textbox(label=L["lbl_fname_tr"], value="train", min_width=100)
                             fname_vl = gr.Textbox(label=L["lbl_fname_val"], value="val",  min_width=100)
                         embed_dir = gr.Textbox(
                             label=L["lbl_embed_dir"],
-                            value=str(DATA_DIR / "min_img23d_test" / "prompt_embeds_sd15"),
+                            value=str(DATA_DIR / "chibi_train" / "prompt_embeds_sd15"),
                         )
                         with gr.Row():
-                            steps_in = gr.Number(label=L["lbl_steps"], value=5000, precision=0)
-                            lr_in    = gr.Textbox(label=L["lbl_lr"],   value="5e-5")
+                            steps_in = gr.Number(label=L["lbl_steps"], value=500, precision=0)
+                            lr_in    = gr.Textbox(label=L["lbl_lr"],   value="1e-5")
                         with gr.Row():
                             batch_in = gr.Number(label=L["lbl_batch"], value=1, precision=0)
                             accum_in = gr.Number(label=L["lbl_accum"], value=1, precision=0)
@@ -1052,10 +1136,18 @@ def build_ui():
 
                 start_btn.click(
                     fn=start_training,
-                    inputs=[tag_in, train_dir, val_dir, ds_size, fname_tr, fname_vl,
+                    inputs=[tag_in, config_dd, train_dir, val_dir, ds_size, fname_tr, fname_vl,
                             embed_dir, steps_in, lr_in, batch_in, accum_in,
                             use_lora, lora_r, lora_a, load_model_dd],
                     outputs=[status_bar],
+                )
+
+                config_dd.change(
+                    fn=auto_fill_from_config,
+                    inputs=[config_dd],
+                    outputs=[tag_in, train_dir, val_dir, ds_size,
+                             fname_tr, fname_vl, embed_dir, steps_in, lr_in,
+                             batch_in, accum_in],
                 )
                 stop_btn.click(fn=stop_training, outputs=[status_bar])
                 refresh_btn.click(fn=get_logs,        outputs=[log_box])
@@ -1196,7 +1288,7 @@ def build_ui():
             dp_btn_blender, dp_btn_parquet, dp_btn_stop,
             dp_status_bar, dp_sec_terminal, dp_btn_refresh,
             # Tab 1
-            sec_config, tag_in, train_dir, val_dir,
+            sec_config, config_dd, tag_in, train_dir, val_dir,
             ds_size, fname_tr, fname_vl, embed_dir,
             steps_in, lr_in, batch_in, accum_in, load_model_dd,
             lora_acc, use_lora, lora_r, lora_a,

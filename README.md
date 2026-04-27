@@ -94,6 +94,19 @@ PYTHONPATH=. python data/preparation/pack_to_parquet.py
 
 The train split gets all but the last object; val gets the last. With 2 OBJs: Miyabi → train, lina → val (alphabetically sorted).
 
+START FINETUNING
+PYTHONPATH=. python src/train_gsdiff_sd.py \
+  --config_file configs/gsdiff_sd15_chibi.yaml \
+  --tag gsdiff_sd15_chibi_ft \
+  --load_pretrained_gsrecon gsrecon_gobj265k_cnp_even4 \
+  --load_pretrained_gsvae gsvae_gobj265k_sd \
+  --load_pretrained_model <Choose ONE Pretrain gsdiff tag> \
+  --use_ema \
+  --mixed_precision fp16 \
+  --num_workers 2
+
+
+
 ## 📊 Dataset
 - We use [G-Objaverse](https://github.com/modelscope/richdreamer/tree/main/dataset/gobjaverse) with about 265K 3D objects and 10.6M rendered images (265K x 40 views, including RGB, normal and depth maps) for `GSRecon` and `GSVAE` training. [Its subset](https://github.com/ashawkey/objaverse_filter) with about 83K 3D objects provided by [LGM](https://me.kiui.moe/lgm) is used for `DiffSplat` training. Their text descriptions are provided by the latest version of [Cap3D](https://huggingface.co/datasets/tiange/Cap3D) (i.e., refined by [DiffuRank](https://arxiv.org/abs/2404.07984)).
 - We find the filtering is crucial for the generation quality of `DiffSplat`, and a larger dataset is beneficial for the performance of `GSRecon` and `GSVAE`.

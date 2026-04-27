@@ -1,10 +1,15 @@
 """
-Blender render script — produces 40-view RGBA renders + camera JSONs per OBJ.
+Blender render script — produces 40-view RGBA renders + camera JSONs per model file.
 
 Run inside Blender:
     blender --background --python data/preparation/blender_transfer.py
 
-Output staging dir:  data/chibi_renders/{obj_stem}/{00000-00039}.{png,json}
+Supported formats:
+    .obj   — auto grey material fallback
+    .blend — full color/materials preserved
+    .3ds   — 3ds Max format (via Blender's autodesk_3ds importer)
+    .fbx   — FBX format (3ds Max / general, via Blender's fbx importer)
+Output staging dir:  data/chibi_renders/{stem}/{00000-00039}.{png,json}
 Then run:            python data/preparation/pack_to_parquet.py
 """
 
@@ -19,7 +24,7 @@ from pathlib import Path
 # ── Paths (Linux absolute paths for WSL) ──────────────────────────────────
 SCRIPT_DIR   = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
-OBJ_DIR      = PROJECT_ROOT / "data" / "chibi_train_obj_data"
+OBJ_DIR      = PROJECT_ROOT / "data" / "chibi_train_obj_data"   # scanned for .obj and .blend
 RENDER_DIR   = PROJECT_ROOT / "data" / "chibi_renders"
 
 # ── Render settings ───────────────────────────────────────────────────────
@@ -59,13 +64,40 @@ def setup_render():
     scene.world.node_tree.nodes["Background"].inputs[0].default_value = (0, 0, 0, 1)
 
 
+def _normalize_mesh(obj, padding=0.8):
+    """Center at world origin and fit inside a unit bounding box with padding.
+
+    Uses origin_set so the pivot moves to the geometry center before any math,
+    avoiding the off-center bug that occurs when obj.location and vertex positions
+    are in different coordinate frames.
+    """
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.context.view_layer.update()
+
+    # Shift object origin to bounding-box center (adjusts local vertex coords in-place)
+    bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+    # Origin is now at the geometry center; move it to the world origin
+    obj.location = (0.0, 0.0, 0.0)
+
+    # Recompute world-space bounding box after the move
+    bpy.context.view_layer.update()
+    bbox = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    lo   = Vector(map(min, zip(*bbox)))
+    hi   = Vector(map(max, zip(*bbox)))
+    size = max(hi - lo)
+    obj.scale = Vector((padding / size,) * 3)
+
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+
 def import_obj(filepath: str):
     bpy.ops.wm.obj_import(filepath=filepath)
     meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH']
     if not meshes:
         raise RuntimeError(f"No mesh found in {filepath}")
 
-    # If multiple mesh objects, join them
     bpy.ops.object.select_all(action='DESELECT')
     for m in meshes:
         m.select_set(True)
@@ -74,23 +106,89 @@ def import_obj(filepath: str):
         bpy.ops.object.join()
     obj = bpy.context.active_object
 
-    # Center at origin, normalize to unit bounding box
-    bbox = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
-    lo = Vector(map(min, zip(*bbox)))
-    hi = Vector(map(max, zip(*bbox)))
-    center = (lo + hi) / 2
-    size   = max(hi - lo)
-    obj.location -= center
-    obj.scale     = Vector((1.0 / size,) * 3)
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    _normalize_mesh(obj)
 
-    # Default grey material if no material
+    # Default grey material only when OBJ has no material
     if not obj.data.materials:
         mat = bpy.data.materials.new("DefaultMat")
         mat.use_nodes = True
         mat.node_tree.nodes["Principled BSDF"].inputs[0].default_value = (0.8, 0.8, 0.8, 1)
         obj.data.materials.append(mat)
 
+    return obj
+
+
+def import_3ds(filepath: str):
+    """Import a .3ds (3ds Max) file."""
+    bpy.ops.import_scene.autodesk_3ds(filepath=filepath)
+    meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+    if not meshes:
+        raise RuntimeError(f"No mesh found in {filepath}")
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for m in meshes:
+        m.select_set(True)
+    bpy.context.view_layer.objects.active = meshes[0]
+    if len(meshes) > 1:
+        bpy.ops.object.join()
+    obj = bpy.context.active_object
+    _normalize_mesh(obj)
+    return obj
+
+
+def import_fbx(filepath: str):
+    """Import a .fbx (3ds Max / general) file."""
+    bpy.ops.import_scene.fbx(filepath=filepath)
+    meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+    if not meshes:
+        raise RuntimeError(f"No mesh found in {filepath}")
+
+    bpy.ops.object.select_all(action='DESELECT')
+    for m in meshes:
+        m.select_set(True)
+    bpy.context.view_layer.objects.active = meshes[0]
+    if len(meshes) > 1:
+        bpy.ops.object.join()
+    obj = bpy.context.active_object
+    _normalize_mesh(obj)
+    return obj
+
+
+def import_blend(filepath: str):
+    """Append all mesh objects from a .blend file, preserving their materials/colors."""
+    with bpy.data.libraries.load(filepath, link=False) as (data_from, data_to):
+        data_to.objects = [name for name in data_from.objects]
+
+    meshes = []
+    for obj in data_to.objects:
+        if obj is not None and obj.type == 'MESH':
+            bpy.context.collection.objects.link(obj)
+            meshes.append(obj)
+
+    if not meshes:
+        raise RuntimeError(f"No mesh objects found in {filepath}")
+
+    # Locate external texture files relative to the blend file's directory, then
+    # pack them into memory so they survive the scene and are available to Cycles.
+    bpy.ops.file.find_missing_files(directory=str(Path(filepath).parent), find_all=True)
+    for img in bpy.data.images:
+        if not img.packed_file:
+            try:
+                img.pack()
+            except Exception:
+                pass
+
+    # Join all parts into one mesh, then normalize — this is simpler and avoids
+    # the per-object location/scale math that caused the off-center bug.
+    bpy.ops.object.select_all(action='DESELECT')
+    for m in meshes:
+        m.select_set(True)
+    bpy.context.view_layer.objects.active = meshes[0]
+    if len(meshes) > 1:
+        bpy.ops.object.join()
+
+    obj = bpy.context.active_object
+    _normalize_mesh(obj)
     return obj
 
 
@@ -135,7 +233,15 @@ def render_object(obj_path: Path):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     setup_render()
 
-    import_obj(str(obj_path))
+    suffix = obj_path.suffix.lower()
+    if suffix == ".blend":
+        import_blend(str(obj_path))
+    elif suffix == ".3ds":
+        import_3ds(str(obj_path))
+    elif suffix == ".fbx":
+        import_fbx(str(obj_path))
+    else:
+        import_obj(str(obj_path))
     cam = setup_camera()
     setup_lights()
 
@@ -170,12 +276,14 @@ def render_object(obj_path: Path):
 
 
 def main():
-    obj_files = sorted(OBJ_DIR.glob("*.obj"))
+    obj_files = (sorted(OBJ_DIR.glob("*.obj")) + sorted(OBJ_DIR.glob("*.blend"))
+                 + sorted(OBJ_DIR.glob("*.3ds")) + sorted(OBJ_DIR.glob("*.fbx")))
+    obj_files = sorted(set(obj_files))          # dedup, consistent order
     if not obj_files:
-        print(f"No .obj files found in {OBJ_DIR}", file=sys.stderr)
+        print(f"No .obj / .blend / .3ds / .fbx files found in {OBJ_DIR}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Found {len(obj_files)} OBJ file(s): {[f.name for f in obj_files]}")
+    print(f"Found {len(obj_files)} file(s): {[f.name for f in obj_files]}")
     RENDER_DIR.mkdir(parents=True, exist_ok=True)
 
     for obj_path in obj_files:
