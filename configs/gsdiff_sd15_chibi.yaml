@@ -27,6 +27,7 @@ train:
     use_ema_warmup: true
     inv_gamma: 1.
     power: 0.75
+  early_eval: 50
 
 val:
   batch_size_per_gpu: 1
