@@ -39,46 +39,58 @@ Feel free to contact me (chenguolin@stu.pku.edu.cn) or open an issue if you have
 
 
 
-## 🔧 Installation
+## Installation
 
-You may need to modify the specific version of `torch` in `settings/setup.sh` according to your CUDA version.
-There are not restrictions on the `torch` version, feel free to use your preferred one.
+You can still use the original setup script:
+
 ```bash
-（official)
 git clone https://github.com/chenguolin/DiffSplat.git
 cd DiffSplat
 bash settings/setup.sh
 ```
-### Env (in windows/ 5070)
-```bibtex
-# Create the conda environment
-conda create -n diffsplat_sm120 python=3.10.20
-# Activate the environment
-conda activate diffsplat_sm120
-# Install PyTorch with CUDA 12.8 support
-pip install torch==2.11.0+cu128 --index-url https://download.pytorch.org/whl/cu128
-# Activate the environment
+
+For this fork, a top-level `requirements.txt` is also provided for easier setup.
+
+### Recommended environment (WSL / Linux)
+
+```bash
+conda create -n diffsplat_sm120 python=3.10
 conda activate diffsplat_sm120
 
-// Gradio
+# Install PyTorch for your CUDA version first.
+# Example: CUDA 12.8
+pip install torch==2.11.0+cu128 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# Optional but recommended for training / inference speed
+pip install xformers
+
+# Project dependencies
+pip install -r requirements.txt
+
+# System tools
+sudo apt-get update
+sudo apt-get install -y ffmpeg blender
+```
+
+### Gaussian rasterization extension
+
+This project also depends on the modified Gaussian Splatting rasterizer used by DiffSplat:
+
+```bash
+git clone https://github.com/BaowenZ/RaDe-GS.git extensions/RaDe-GS --recursive
+pip install ./extensions/RaDe-GS/submodules/diff-gaussian-rasterization
+```
+
+### Launch the Gradio app
+
+```bash
 conda activate diffsplat_sm120
 cd ~/Gen_Final_Project
 PYTHONPATH=. python app.py
-open http://localhost:5788/
 ```
-==================================================
-Python version: 3.10.20
-OS: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
-==================================================
-PyTorch version: 2.11.0+cu128
-CUDA available: True
-CUDA version: 12.8
-cuDNN version: 91900
-GPU count: 1
-Current GPU: NVIDIA GeForce RTX 5070 Laptop GPU
 
-sudo apt  install blender  # version 4.0.2+dfsg-1ubuntu1
-==================================================
+Then open `http://localhost:5788/`.
+
 
 ## 🧸 Chibi Character Fine-tuning
 

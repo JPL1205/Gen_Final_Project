@@ -915,6 +915,7 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elev
         sys.executable, "src/infer_gsdiff_sd.py",
         "--config_file", infer_config,
         "--tag", infer_tag,
+        "--infer_tag", exp_tag,
         "--infer_from_iter", str(int(infer_ckpt)),
         "--output_dir", str(OUT_DIR),
         "--guidance_scale", str(cfg_scale),

@@ -51,6 +51,12 @@ def main():
         help="Tag that refers to the current experiment"
     )
     parser.add_argument(
+        "--infer_tag",
+        type=str,
+        default=None,
+        help="Override output directory tag for inference results (defaults to --tag)"
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         default="out",
@@ -353,7 +359,8 @@ def main():
     # Create the experiment directory
     exp_dir = os.path.join(args.output_dir, args.tag)
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
-    infer_dir = os.path.join(exp_dir, "inference")
+    infer_output_tag = args.infer_tag if args.infer_tag else args.tag
+    infer_dir = os.path.join(args.output_dir, infer_output_tag, "inference")
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(infer_dir, exist_ok=True)
     args.hdfs_dir, args.project_hdfs_dir = util.prepare_hdfs_output_dir(args.hdfs_dir, args.tag)

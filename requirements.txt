@@ -1,0 +1,13 @@
+# Install PyTorch / torchvision / xformers separately for your CUDA version
+# before running `pip install -r requirements.txt`.
+-r settings/requirements.txt
+
+# Runtime / UI dependencies used by this fork
+gradio
+plotly
+opencv-python-headless
+PyYAML
+huggingface_hub
+packaging
+tqdm
+gpustat
