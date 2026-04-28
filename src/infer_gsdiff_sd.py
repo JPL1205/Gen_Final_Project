@@ -468,7 +468,8 @@ def main():
         lora_ckpt_dir = os.path.join(args.output_dir, args.load_lora_tag, "checkpoints")
         lora_hdfs_dir = None if args.hdfs_dir is None else os.path.join(args.project_hdfs_dir, args.load_lora_tag)
         lora_ckpt = util.load_ckpt(lora_ckpt_dir, args.load_lora_ckpt, lora_hdfs_dir, None)
-        return os.path.join(lora_ckpt_dir, f"{lora_ckpt:06d}", subfolder)
+        path = os.path.join(lora_ckpt_dir, f"{lora_ckpt:06d}", subfolder)
+        return path if os.path.exists(path) else None
 
     # Load checkpoint
     logger.info(f"Load checkpoint from iteration [{args.infer_from_iter}]\n")
@@ -641,7 +642,7 @@ def main():
                 mode="bilinear", align_corners=False, antialias=True
             )
             image = image.unsqueeze(1).to(device=f"cuda:{args.gpu_id}")  # (B=1, V_cond=1, 3, H, W)
-            if args.load_pretrained_controlnet is not None:
+            if args.load_pretrained_controlnet is not None or controlnet_lora_dir is not None:
                 image = image.squeeze(1)  # (B=1, 3, H, W) for controlnet input
         else:
             image_name = ""
