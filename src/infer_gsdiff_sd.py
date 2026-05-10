@@ -716,7 +716,11 @@ def main():
                         height=args.render_res, width=args.render_res,
                         opacity_threshold=args.opacity_threshold,
                     )
-                    images = render_outputs["image"].squeeze(0)  # (V_in, 3, H, W)
+                    images = vis_util.composite_over_background(
+                        render_outputs["image"],
+                        render_outputs["alpha"],
+                        bg_color=1.0,
+                    ).squeeze(0)  # (V_in, 3, H, W)
                     IMAGES.append(images)
                     images = vis_util.tensor_to_image(rearrange(images, "v c h w -> c h (v w)"))  # (H, V*W, 3)
                     imageio.imwrite(os.path.join(infer_dir, f"{name}_gs.png"), images)
@@ -759,7 +763,11 @@ def main():
                                 scaling_modifier=min(render_azimuths[v] / 360, 1) if fancy_video else 1.,
                                 opacity_threshold=args.opacity_threshold,
                             )
-                            image = render_outputs["image"].squeeze(0).squeeze(0)  # (3, H, W)
+                            image = vis_util.composite_over_background(
+                                render_outputs["image"],
+                                render_outputs["alpha"],
+                                bg_color=1.0,
+                            ).squeeze(0).squeeze(0)  # (3, H, W)
                             images.append(vis_util.tensor_to_image(image, return_pil=save_gif))
 
                         if save_gif:

@@ -131,6 +131,29 @@ STRINGS = {
         "dp_status_running":     "🟢 Running",
         "dp_status_done_ok":     "✅ Done",
         "dp_status_done_err":    "❌ Failed",
+        # Tab 4 — Evaluation
+        "sec_eval":              "### 📐 Evaluation Setup",
+        "lbl_base_exp":          "Baseline Experiment",
+        "lbl_base_iter":         "Baseline Inference Iter",
+        "lbl_ft_exp":            "Fine-tuned Experiment",
+        "lbl_ft_iter":           "Fine-tuned Inference Iter",
+        "lbl_val_parquet":       "Val Parquet",
+        "lbl_eval_gpu":          "GPU ID",
+        "btn_run_eval":          "▶  Run Evaluation",
+        "lbl_eval_status":       "Status",
+        "sec_eval_results":      "### 📊 Results",
+        "lbl_base_psnr":         "Baseline PSNR ↑",
+        "lbl_base_ssim":         "Baseline SSIM ↑",
+        "lbl_base_lpips":        "Baseline LPIPS ↓",
+        "lbl_ft_psnr":           "Fine-tuned PSNR ↑",
+        "lbl_ft_ssim":           "Fine-tuned SSIM ↑",
+        "lbl_ft_lpips":          "Fine-tuned LPIPS ↓",
+        "lbl_eval_chart":        "Metric Comparison",
+        "lbl_eval_gallery":      "GT vs Predicted Views (interleaved)",
+        "eval_status_idle":      "⚪ Idle",
+        "eval_status_running":   "🟢 Running",
+        "eval_status_done_ok":   "✅ Finished",
+        "eval_status_done_err":  "❌ Failed",
     },
     "zh": {
         # Header
@@ -227,6 +250,29 @@ STRINGS = {
         "dp_status_running":     "🟢 运行中",
         "dp_status_done_ok":     "✅ 已完成",
         "dp_status_done_err":    "❌ 已失败",
+        # Tab 4 — 评估
+        "sec_eval":              "### 📐 评估配置",
+        "lbl_base_exp":          "基准实验（Pretrained）",
+        "lbl_base_iter":         "基准推理迭代步数",
+        "lbl_ft_exp":            "微调实验（Fine-tuned）",
+        "lbl_ft_iter":           "微调推理迭代步数",
+        "lbl_val_parquet":       "验证集 Parquet",
+        "lbl_eval_gpu":          "GPU ID",
+        "btn_run_eval":          "▶  运行评估",
+        "lbl_eval_status":       "状态",
+        "sec_eval_results":      "### 📊 评估结果",
+        "lbl_base_psnr":         "基准 PSNR ↑",
+        "lbl_base_ssim":         "基准 SSIM ↑",
+        "lbl_base_lpips":        "基准 LPIPS ↓",
+        "lbl_ft_psnr":           "微调 PSNR ↑",
+        "lbl_ft_ssim":           "微调 SSIM ↑",
+        "lbl_ft_lpips":          "微调 LPIPS ↓",
+        "lbl_eval_chart":        "指标对比",
+        "lbl_eval_gallery":      "GT vs 预测视角（交叉显示）",
+        "eval_status_idle":      "⚪ 未运行",
+        "eval_status_running":   "🟢 运行中",
+        "eval_status_done_ok":   "✅ 已完成",
+        "eval_status_done_err":  "❌ 已失败",
     },
 }
 
@@ -250,6 +296,16 @@ class _DataPrepState:
     lock: threading.Lock = threading.Lock()
 
 DS = _DataPrepState()
+
+
+class _EvalState:
+    running:    bool  = False
+    results:    dict  = {}   # {"Baseline": (psnr, ssim, lpips), "Fine-tuned": (...)}
+    images:     list  = []   # interleaved [gt_v0, pred_v0, gt_v1, pred_v1, ...]
+    status_msg: str   = ""
+    lock: threading.Lock = threading.Lock()
+
+ES = _EvalState()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -296,6 +352,20 @@ def _list_checkpoints(tag: str) -> list:
     if not ckpt_dir.exists():
         return []
     return sorted([d.name for d in ckpt_dir.iterdir() if d.is_dir()])
+
+
+def _list_inference_iters(tag: str) -> list:
+    if not tag:
+        return []
+    infer_dir = OUT_DIR / tag / "inference"
+    if not infer_dir.exists():
+        return []
+    iters = set()
+    for f in infer_dir.glob("*_gs.png"):
+        m = re.search(r'_(\d+)_gs\.png$', f.name)
+        if m:
+            iters.add(int(m.group(1)))
+    return sorted(iters)
 
 
 def _get_unet_in_channels(tag: str, ckpt_step) -> Optional[int]:
@@ -901,13 +971,7 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elev
                 "  2) Download: python download_ckpt.py --model_type sd15 --image_cond"
             )
 
-    image_tmp_path = None
-    if image is not None:
-        from PIL import Image as PILImage
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir="/tmp")
-        PILImage.fromarray(image.astype("uint8")).save(tmp.name)
-        image_tmp_path = tmp.name
+    image_tmp_path = image if image is not None else None
 
     infer_config, infer_tag, infer_ckpt, extra_model_args = _resolve_inference_model_args(exp_tag, ckpt_step)
 
@@ -990,6 +1054,160 @@ def run_inference(prompt, image, cfg_scale, seed, num_steps, elevation, use_elev
     out_image, out_video = _pick_output_pair(infer_dir, start_time)
     progress(1.0, desc=_progress_desc("Done", 1.0))
     return out_image, out_video, f"✅ Done. Output dir: {infer_dir}"
+
+
+# ══════════════════════════════════════════════════════════════
+#  Tab 4 — Evaluation
+# ══════════════════════════════════════════════════════════════
+
+# GT views: 4 azimuths at 0°/90°/180°/270°; 360°/40 views = 9° per step
+_EVAL_VIEW_KEYS = ["00000.png", "00010.png", "00020.png", "00030.png"]
+
+
+def _eval_load_gt(val_parquet: str):
+    import io as _io
+    import pandas as pd
+    df = pd.read_parquet(val_parquet)
+    row = df.iloc[0]
+    from PIL import Image as _Image
+    return [_Image.open(_io.BytesIO(row[k])).convert("RGB").resize((256, 256))
+            for k in _EVAL_VIEW_KEYS]
+
+
+def _eval_load_pred_strip(tag: str, pred_iter: int):
+    import numpy as np
+    from PIL import Image as _Image
+    infer_dir = OUT_DIR / tag / "inference"
+    pattern = str(infer_dir / f"*_{int(pred_iter):06d}_gs.png")
+    matches = sorted(glob.glob(pattern))
+    if not matches:
+        raise FileNotFoundError(f"No inference PNG matching {pattern}")
+    strip = np.array(_Image.open(matches[-1]).convert("RGB"))
+    W = strip.shape[1] // 4
+    return [_Image.fromarray(strip[:, i * W:(i + 1) * W]).resize((256, 256))
+            for i in range(4)]
+
+
+def _eval_make_chart(results: dict):
+    if not results:
+        return go.Figure()
+    names  = list(results.keys())
+    psnrs  = [results[n][0] for n in names]
+    ssims  = [results[n][1] for n in names]
+    lpipss = [results[n][2] for n in names]
+    colors = ["#3b82f6", "#10b981", "#ea580c"][:len(names)]
+
+    fig = make_subplots(rows=1, cols=3,
+                        subplot_titles=["PSNR ↑", "SSIM ↑", "LPIPS ↓"],
+                        horizontal_spacing=0.10)
+    for i, (name, color) in enumerate(zip(names, colors)):
+        show_legend = (i == 0)
+        fig.add_trace(go.Bar(name=name, x=[name], y=[psnrs[i]],  marker_color=color,
+                             text=[f"{psnrs[i]:.3f}"],  textposition="outside",
+                             legendgroup=name, showlegend=True),  row=1, col=1)
+        fig.add_trace(go.Bar(name=name, x=[name], y=[ssims[i]],  marker_color=color,
+                             text=[f"{ssims[i]:.4f}"],  textposition="outside",
+                             legendgroup=name, showlegend=False), row=1, col=2)
+        fig.add_trace(go.Bar(name=name, x=[name], y=[lpipss[i]], marker_color=color,
+                             text=[f"{lpipss[i]:.4f}"], textposition="outside",
+                             legendgroup=name, showlegend=False), row=1, col=3)
+
+    fig.update_layout(
+        height=340, barmode="group",
+        margin=dict(l=40, r=20, t=55, b=30),
+        paper_bgcolor="white", plot_bgcolor="#f8fafc",
+        font=dict(size=11, family="monospace"),
+        legend=dict(orientation="h", y=1.18, x=0.5, xanchor="center"),
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0", linecolor="#cbd5e1")
+    fig.update_xaxes(showticklabels=False)
+    return fig
+
+
+def _run_eval_thread(base_exp, base_iter, ft_exp, ft_iter, val_parquet, gpu_id):
+    from src.utils.metrics import ImageConditionMetrics
+    def _set_status(msg):
+        with ES.lock:
+            ES.status_msg = msg
+
+    try:
+        _set_status("🟢 Loading metric models (LPIPS)…")
+        metrics = ImageConditionMetrics(lpips_net="vgg", lpips_res=256, device_idx=int(gpu_id))
+        gt_views = _eval_load_gt(val_parquet)
+
+        results, gallery = {}, []
+
+        if base_exp and base_iter is not None:
+            _set_status("🟢 Evaluating baseline…")
+            preds = _eval_load_pred_strip(base_exp, int(base_iter))
+            (psnr_m, _), (ssim_m, _), (lpips_m, _) = metrics.evaluate(preds, gt_views)
+            results["Baseline"] = (psnr_m, ssim_m, lpips_m)
+            for gt, pred in zip(gt_views, preds):
+                gallery.extend([gt, pred])
+
+        if ft_exp and ft_iter is not None:
+            _set_status("🟢 Evaluating fine-tuned…")
+            preds = _eval_load_pred_strip(ft_exp, int(ft_iter))
+            (psnr_m, _), (ssim_m, _), (lpips_m, _) = metrics.evaluate(preds, gt_views)
+            results["Fine-tuned"] = (psnr_m, ssim_m, lpips_m)
+            if not gallery:
+                for gt, pred in zip(gt_views, preds):
+                    gallery.extend([gt, pred])
+
+        with ES.lock:
+            ES.results    = results
+            ES.images     = gallery
+            ES.running    = False
+            ES.status_msg = STRINGS[S.lang]["eval_status_done_ok"]
+    except Exception as exc:
+        with ES.lock:
+            ES.running    = False
+            ES.status_msg = f"{STRINGS[S.lang]['eval_status_done_err']}: {exc}"
+
+
+def start_eval(base_exp, base_iter, ft_exp, ft_iter, val_parquet, gpu_id):
+    with ES.lock:
+        if ES.running:
+            return "⚠️ Evaluation already running."
+        ES.running    = True
+        ES.results    = {}
+        ES.images     = []
+        ES.status_msg = STRINGS[S.lang]["eval_status_running"]
+    threading.Thread(
+        target=_run_eval_thread,
+        args=(base_exp, base_iter, ft_exp, ft_iter, val_parquet, gpu_id),
+        daemon=True,
+    ).start()
+    return STRINGS[S.lang]["eval_status_running"]
+
+
+def get_eval_status():
+    with ES.lock:
+        return ES.status_msg or STRINGS[S.lang]["eval_status_idle"]
+
+
+def get_eval_outputs():
+    with ES.lock:
+        results = dict(ES.results)
+        images  = list(ES.images)
+
+    def fmt(key, idx, decimals):
+        v = results.get(key)
+        return f"{v[idx]:.{decimals}f}" if v else "—"
+
+    base_psnr  = fmt("Baseline",   0, 3)
+    base_ssim  = fmt("Baseline",   1, 4)
+    base_lpips = fmt("Baseline",   2, 4)
+    ft_psnr    = fmt("Fine-tuned", 0, 3)
+    ft_ssim    = fmt("Fine-tuned", 1, 4)
+    ft_lpips   = fmt("Fine-tuned", 2, 4)
+    chart      = _eval_make_chart(results)
+    return base_psnr, base_ssim, base_lpips, ft_psnr, ft_ssim, ft_lpips, chart, images
+
+
+def refresh_eval_iters(tag: str):
+    iters = _list_inference_iters(tag)
+    return gr.Dropdown(choices=iters, value=iters[-1] if iters else None)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1076,6 +1294,25 @@ def switch_lang(lang_label: str):
         gr.update(value=t["sec_terminal"]),
         gr.update(value=t["btn_refresh"]),
         gr.update(value=t["tip_infer"]),
+        # Tab 4 — Evaluation
+        gr.update(value=t["sec_eval"]),
+        gr.update(label=t["lbl_base_exp"]),
+        gr.update(label=t["lbl_base_iter"]),
+        gr.update(label=t["lbl_ft_exp"]),
+        gr.update(label=t["lbl_ft_iter"]),
+        gr.update(label=t["lbl_val_parquet"]),
+        gr.update(label=t["lbl_eval_gpu"]),
+        gr.update(value=t["btn_run_eval"]),
+        gr.update(label=t["lbl_eval_status"]),
+        gr.update(value=t["sec_eval_results"]),
+        gr.update(label=t["lbl_base_psnr"]),
+        gr.update(label=t["lbl_base_ssim"]),
+        gr.update(label=t["lbl_base_lpips"]),
+        gr.update(label=t["lbl_ft_psnr"]),
+        gr.update(label=t["lbl_ft_ssim"]),
+        gr.update(label=t["lbl_ft_lpips"]),
+        gr.update(label=t["lbl_eval_chart"]),
+        gr.update(label=t["lbl_eval_gallery"]),
     )
 
 
@@ -1348,7 +1585,7 @@ def build_ui():
                                                         value="", lines=2)
                             with gr.Tab("🖼 Image") as tab_image:
                                 image_in = gr.Image(label=L["lbl_image_in"],
-                                                    type="numpy", height=240)
+                                                    type="filepath", height=240)
                         gr.Markdown("---")
                         sec_params  = gr.Markdown(L["sec_params"])
                         with gr.Row():
@@ -1438,6 +1675,115 @@ def build_ui():
                 infer_refresh_btn.click(fn=get_infer_logs, inputs=[infer_exp_dd], outputs=[infer_log_box])
                 infer_exp_dd.change(fn=get_infer_logs, inputs=[infer_exp_dd], outputs=[infer_log_box])
 
+            # ══════════ TAB 4 ══════════
+            with gr.Tab("4 · Evaluation"):
+                with gr.Row(equal_height=False):
+
+                    # Left panel — configuration
+                    with gr.Column(scale=4, min_width=300):
+                        sec_eval = gr.Markdown(L["sec_eval"])
+
+                        gr.Markdown("**Baseline (Pretrained)**")
+                        with gr.Row():
+                            eval_base_exp = gr.Dropdown(
+                                label=L["lbl_base_exp"],
+                                choices=_list_experiments(),
+                                allow_custom_value=True,
+                            )
+                            eval_base_iter = gr.Dropdown(
+                                label=L["lbl_base_iter"],
+                                choices=[],
+                                allow_custom_value=True,
+                            )
+
+                        gr.Markdown("**Fine-tuned**")
+                        with gr.Row():
+                            eval_ft_exp = gr.Dropdown(
+                                label=L["lbl_ft_exp"],
+                                choices=_list_experiments(),
+                                allow_custom_value=True,
+                            )
+                            eval_ft_iter = gr.Dropdown(
+                                label=L["lbl_ft_iter"],
+                                choices=[],
+                                allow_custom_value=True,
+                            )
+
+                        eval_val_parquet = gr.Textbox(
+                            label=L["lbl_val_parquet"],
+                            value=str(DATA_DIR / "chibi_train" / "val.parquet"),
+                        )
+                        eval_gpu = gr.Number(label=L["lbl_eval_gpu"], value=0, precision=0)
+                        gr.Markdown(
+                            "_Run inference (Tab 3) on the val character first, then evaluate here._"
+                        )
+                        gr.Markdown("---")
+                        eval_btn = gr.Button(L["btn_run_eval"], variant="primary",
+                                             elem_classes="btn-orange")
+                        eval_status_bar = gr.Textbox(
+                            label=L["lbl_eval_status"],
+                            value=L["eval_status_idle"],
+                            interactive=False, max_lines=1,
+                        )
+
+                    # Right panel — results
+                    with gr.Column(scale=8):
+                        sec_eval_results = gr.Markdown(L["sec_eval_results"])
+
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("**Baseline**")
+                                with gr.Row():
+                                    eval_base_psnr  = gr.Textbox(label=L["lbl_base_psnr"],
+                                                                  value="—", interactive=False,
+                                                                  max_lines=1, elem_classes="metric-card")
+                                    eval_base_ssim  = gr.Textbox(label=L["lbl_base_ssim"],
+                                                                  value="—", interactive=False,
+                                                                  max_lines=1, elem_classes="metric-card")
+                                    eval_base_lpips = gr.Textbox(label=L["lbl_base_lpips"],
+                                                                  value="—", interactive=False,
+                                                                  max_lines=1, elem_classes="metric-card")
+                            with gr.Column():
+                                gr.Markdown("**Fine-tuned**")
+                                with gr.Row():
+                                    eval_ft_psnr    = gr.Textbox(label=L["lbl_ft_psnr"],
+                                                                  value="—", interactive=False,
+                                                                  max_lines=1, elem_classes="metric-card")
+                                    eval_ft_ssim    = gr.Textbox(label=L["lbl_ft_ssim"],
+                                                                  value="—", interactive=False,
+                                                                  max_lines=1, elem_classes="metric-card")
+                                    eval_ft_lpips   = gr.Textbox(label=L["lbl_ft_lpips"],
+                                                                  value="—", interactive=False,
+                                                                  max_lines=1, elem_classes="metric-card")
+
+                        eval_chart = gr.Plot(label=L["lbl_eval_chart"])
+                        eval_gallery = gr.Gallery(
+                            label=L["lbl_eval_gallery"],
+                            columns=4, height=360, object_fit="contain",
+                        )
+
+                eval_timer = gr.Timer(value=2)
+                eval_timer.tick(fn=get_eval_status, outputs=[eval_status_bar])
+                eval_timer.tick(
+                    fn=get_eval_outputs,
+                    outputs=[eval_base_psnr, eval_base_ssim, eval_base_lpips,
+                             eval_ft_psnr, eval_ft_ssim, eval_ft_lpips,
+                             eval_chart, eval_gallery],
+                )
+
+                eval_base_exp.change(fn=refresh_eval_iters,
+                                     inputs=[eval_base_exp], outputs=[eval_base_iter])
+                eval_ft_exp.change(fn=refresh_eval_iters,
+                                   inputs=[eval_ft_exp], outputs=[eval_ft_iter])
+
+                eval_btn.click(
+                    fn=start_eval,
+                    inputs=[eval_base_exp, eval_base_iter,
+                            eval_ft_exp, eval_ft_iter,
+                            eval_val_parquet, eval_gpu],
+                    outputs=[eval_status_bar],
+                )
+
         # ─── Language switch: wire ALL translatable components ───
         lang_outputs = [
             header_html,
@@ -1459,6 +1805,13 @@ def build_ui():
             sec_ckpt, infer_exp_dd, infer_ckpt_dd,
             sec_output_opt, save_ply_cb, vid_type, gen_btn,
             infer_status, sec_preview, output_img, output_vid, infer_terminal, infer_refresh_btn, tip_infer,
+            # Tab 4
+            sec_eval, eval_base_exp, eval_base_iter, eval_ft_exp, eval_ft_iter,
+            eval_val_parquet, eval_gpu, eval_btn, eval_status_bar,
+            sec_eval_results,
+            eval_base_psnr, eval_base_ssim, eval_base_lpips,
+            eval_ft_psnr, eval_ft_ssim, eval_ft_lpips,
+            eval_chart, eval_gallery,
         ]
 
         lang_radio.change(

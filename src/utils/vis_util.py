@@ -53,6 +53,26 @@ def tensor_to_image(tensor: Tensor, return_pil: bool = False) -> Union[ndarray, 
     return image
 
 
+def composite_over_background(
+    image: Tensor,
+    alpha: Tensor,
+    bg_color: Union[float, Tuple[float, float, float]] = 1.0,
+) -> Tensor:
+    """Composite RGB images over a solid background for preview/export only."""
+    assert image.ndim == alpha.ndim
+    assert image.shape[-3] == 3 and alpha.shape[-3] == 1
+
+    if isinstance(bg_color, (int, float)):
+        bg = torch.full((3, 1, 1), float(bg_color), dtype=image.dtype, device=image.device)
+    else:
+        bg = torch.tensor(bg_color, dtype=image.dtype, device=image.device).view(3, 1, 1)
+
+    while bg.ndim < image.ndim:
+        bg = bg.unsqueeze(0)
+
+    return image * alpha + (1. - alpha) * bg
+
+
 def load_image(image_path: str, rgba: bool = False, imagenet_norm: bool = False) -> Tensor:
     image = Image.open(image_path)
     tensor_image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.  # (C, H, W) in [0, 1]
